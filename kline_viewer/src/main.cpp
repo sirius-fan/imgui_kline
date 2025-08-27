@@ -451,9 +451,8 @@ int main(int, char**)
             if (opt.show_rsi)    dl->AddLine(ImVec2(cx, rsi_pos.y),  ImVec2(cx, rsi_pos.y  + rsi_size.y),  IM_COL32(200,200,200,60));
             if (opt.show_macd) dl->AddLine(ImVec2(cx, macd_pos.y), ImVec2(cx, macd_pos.y + macd_size.y), IM_COL32(200,200,200,60));
 
-            // Data box
+            // Data box (colored indicators matching plot colors)
             const Candle& c = candles[cross_idx];
-            char buf1[256];
             char sv[32], ev[32], mv[32], sg[32], hs[32], rs[32];
             format_opt(sma_v[cross_idx], sv, sizeof(sv));
             format_opt(ema_v[cross_idx], ev, sizeof(ev));
@@ -462,22 +461,47 @@ int main(int, char**)
             format_opt(hist[cross_idx], hs, sizeof(hs));
             format_opt(rsi_v[cross_idx], rs, sizeof(rs));
             char dt[64]; format_time_label(c.time, dt, sizeof(dt), true);
-            // Change percentage vs previous close
             double chg_pct = NAN; double chg_abs = NAN;
             if (cross_idx > 0) { double pc = candles[cross_idx-1].close; if (pc != 0.0) { chg_abs = c.close - pc; chg_pct = chg_abs / pc * 100.0; } }
-            snprintf(buf1, sizeof(buf1),
-                     "Date: %s\nIdx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nChg: %s%.4f (%s%.2f%%)\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
-                     dt,
-                     cross_idx, c.open, c.high, c.low, c.close, c.volume,
-                     (chg_abs>=0?"+":""), (std::isnan(chg_abs)?0.0:chg_abs),
-                     (chg_pct>=0?"+":""), (std::isnan(chg_pct)?0.0:chg_pct),
-                     sma_period, sv, ema_period, ev,
-                     macd_fast, macd_slow, macd_signal, mv, sg, hs,
-                     rsi_period, rs);
+
+            // Colors
+            auto C = [](ImU32 u){ return ImGui::ColorConvertU32ToFloat4(u); };
+            ImVec4 col_up   = C(IM_COL32(82,196,26,255));
+            ImVec4 col_dn   = C(IM_COL32(255,77,79,255));
+            ImVec4 col_sma  = C(IM_COL32(255,193,7,255));
+            ImVec4 col_ema  = C(IM_COL32(24,144,255,255));
+            ImVec4 col_rsi  = C(IM_COL32(64,158,255,255));
+            ImVec4 col_macd = C(IM_COL32(255,255,255,220));
+            ImVec4 col_sig  = C(IM_COL32(255,215,0,220));
+            ImVec4 col_hist_pos = C(IM_COL32(0,200,0,220));
+            ImVec4 col_hist_neg = C(IM_COL32(220,0,0,220));
+
             ImVec2 box_pos = ImVec2(main_pos.x + 8, main_pos.y + 8);
             ImGui::SetCursorScreenPos(box_pos);
             ImGui::BeginChild("DataBox", ImVec2(460, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
-            ImGui::TextUnformatted(buf1);
+            ImGui::Text("Date: %s", dt);
+            ImGui::Text("Idx: %d", cross_idx);
+            ImGui::Text("O: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f", c.open, c.high, c.low, c.close, c.volume);
+            if (!std::isnan(chg_abs) && !std::isnan(chg_pct)) {
+                ImGui::TextColored(chg_abs >= 0 ? col_up : col_dn, "Chg: %s%.4f (%s%.2f%%)",
+                                   (chg_abs>=0?"+":""), chg_abs, (chg_pct>=0?"+":""), chg_pct);
+            } else {
+                ImGui::Text("Chg: -");
+            }
+            // SMA / EMA
+            ImGui::TextColored(col_sma, "SMA(%d): %s", sma_period, sv);
+            ImGui::SameLine();
+            ImGui::TextColored(col_ema, "  EMA(%d): %s", ema_period, ev);
+            // MACD triple
+            ImGui::Text("MACD(%d,%d,%d):", macd_fast, macd_slow, macd_signal);
+            ImGui::SameLine(); ImGui::TextColored(col_macd, "MACD %s", mv);
+            ImGui::SameLine(); ImGui::TextColored(col_sig,   "  Sig %s", sg);
+            {
+                ImVec4 hcol = (hist[cross_idx] >= 0.0 || std::isnan(hist[cross_idx])) ? col_hist_pos : col_hist_neg;
+                ImGui::SameLine(); ImGui::TextColored(hcol,   "  Hist %s", hs);
+            }
+            // RSI
+            ImGui::TextColored(col_rsi, "RSI(%d): %s", rsi_period, rs);
             ImGui::EndChild();
         }
 
