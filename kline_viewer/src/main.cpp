@@ -60,6 +60,7 @@ struct ChartOptions {
     bool labels_follow_cursor = false; // when true, right-side floating labels follow crosshair index
     bool show_close_line = false;      // show close price as a line on main chart
     bool show_boll = false;            // show Bollinger Bands
+    bool show_hlc_area = false;        // show HLC area (High/Close/Low with fills)
     // BOLL styles
     ImVec4 boll_mid_color = ImVec4(0.77f, 0.35f, 0.94f, 0.86f); // ~ IM_COL32(197,90,240,220)
     ImVec4 boll_band_color = ImVec4(0.77f, 0.35f, 0.94f, 0.55f); // ~ IM_COL32(197,90,240,140)
@@ -361,8 +362,12 @@ int main(int, char **) {
         active_csv = "<synthetic>";
     }
     std::vector<double> closes;
+    std::vector<double> highs;
+    std::vector<double> lows;
     closes.reserve(candles.size());
-    for (auto &c : candles) closes.push_back(c.close);
+    highs.reserve(candles.size());
+    lows.reserve(candles.size());
+    for (auto &c : candles) { closes.push_back(c.close); highs.push_back(c.high); lows.push_back(c.low); }
 
     // Indicator params (customizable)
     int sma_period = 20;
@@ -490,6 +495,38 @@ int main(int, char **) {
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
         if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
+        // HLC area (Low-Close red fill, Close-High green fill) + three lines
+        if (opt.show_hlc_area) {
+            ImDrawList *dlx = dl;
+            const float H = main_size.y;
+            auto y_to = [&](double y){ float ty=(float)((y - y_min)/(y_max - y_min)); return main_pos.y + (1.0f - ty) * H; };
+            ImU32 col_line_h = IM_COL32(82, 196, 26, 255);   // green high
+            ImU32 col_line_c = IM_COL32(24, 144, 255, 255);  // blue close
+            ImU32 col_line_l = IM_COL32(255, 77, 79, 255);   // red low
+            ImU32 col_fill_up = IM_COL32(82, 196, 26, 60);   // translucent green
+            ImU32 col_fill_dn = IM_COL32(255, 77, 79, 60);   // translucent red
+            // Filled bands by quads between consecutive candles
+            for (int i = begin; i < end - 1; ++i) {
+                float x0 = main_pos.x + (i - vs.scroll_x) * vs.scale_x;
+                float x1 = main_pos.x + ((i+1) - vs.scroll_x) * vs.scale_x;
+                float yC0 = y_to(closes[i]);
+                float yC1 = y_to(closes[i+1]);
+                float yH0 = y_to(highs[i]);
+                float yH1 = y_to(highs[i+1]);
+                float yL0 = y_to(lows[i]);
+                float yL1 = y_to(lows[i+1]);
+                // Close -> High (green)
+                ImVec2 gh[4] = { ImVec2(x0, yC0), ImVec2(x0, yH0), ImVec2(x1, yH1), ImVec2(x1, yC1) };
+                dlx->AddConvexPolyFilled(gh, 4, col_fill_up);
+                // Low -> Close (red)
+                ImVec2 rl[4] = { ImVec2(x0, yL0), ImVec2(x0, yC0), ImVec2(x1, yC1), ImVec2(x1, yL1) };
+                dlx->AddConvexPolyFilled(rl, 4, col_fill_dn);
+            }
+            // Lines: High (green), Close (blue), Low (red)
+            draw_line_series(highs,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_line_h, 1.2f);
+            draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_line_c, 1.5f);
+            draw_line_series(lows,   vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_line_l, 1.2f);
+        }
         if (opt.show_boll) {
             ImU32 col_mid  = ImGui::ColorConvertFloat4ToU32(opt.boll_mid_color);
             ImU32 col_band = ImGui::ColorConvertFloat4ToU32(opt.boll_band_color);
@@ -955,6 +992,7 @@ int main(int, char **) {
         ImGui::Checkbox("Volume", &opt.show_volume);
         ImGui::Checkbox("Close line", &opt.show_close_line);
     ImGui::Checkbox("BOLL", &opt.show_boll);
+    ImGui::Checkbox("HLC 区域", &opt.show_hlc_area);
         ImGui::Separator();
         ImGui::Text("Labels");
         ImGui::Checkbox("右侧浮标跟随光标索引", &opt.labels_follow_cursor);
@@ -1001,8 +1039,12 @@ int main(int, char **) {
                 candles.swap(tmp);
                 active_csv = file_buf;
                 closes.clear();
+                highs.clear();
+                lows.clear();
                 closes.reserve(candles.size());
-                for (auto &c2 : candles) closes.push_back(c2.close);
+                highs.reserve(candles.size());
+                lows.reserve(candles.size());
+                for (auto &c2 : candles) { closes.push_back(c2.close); highs.push_back(c2.high); lows.push_back(c2.low); }
                 sma_v = ind::sma(closes, sma_period);
                 ema_v = ind::ema(closes, ema_period);
                 ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
