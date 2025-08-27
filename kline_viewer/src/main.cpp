@@ -54,6 +54,7 @@ struct ChartOptions {
     bool show_macd = true;
     bool show_rsi = true;
     bool show_volume = true;
+    bool labels_follow_cursor = false; // when true, right-side floating labels follow crosshair index
 };
 
 static void glfw_error_callback(int error, const char* description)
@@ -557,7 +558,12 @@ int main(int, char**)
                 int last_by_x = (int)std::floor(vs.scroll_x + right_px / std::max(1.0f, vs.scale_x));
                 last = std::clamp(last_by_x, begin, std::max(begin, end - 1));
             }
-            if (last >= begin && last < end) {
+            // Choose label index: either follow crosshair (if enabled) or use last visible
+            int label_idx = last;
+            if (opt.labels_follow_cursor && crosshair_visible) {
+                label_idx = std::clamp(cross_idx, begin, std::max(begin, end - 1));
+            }
+            if (label_idx >= begin && label_idx < end) {
                 struct Label { float y; ImU32 col; bool filled; std::string text; };
                 auto draw_labels = [&](const std::vector<Label>& in, ImVec2 panel_pos, ImVec2 panel_size){
                     if (in.empty()) return;
@@ -586,11 +592,11 @@ int main(int, char**)
                 // Main panel labels (price filled, SMA/EMA hollow)
                 auto y_to_main = [&](double y){ float ty = (float)((y - y_min) / (y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
                 std::vector<Label> main_labels;
-                const Candle& lc = candles[last];
+                const Candle& lc = candles[label_idx];
                 bool up = lc.close >= lc.open;
                 char tbuf[64]; snprintf(tbuf, sizeof(tbuf), "%.4f", lc.close);
                 main_labels.push_back({ y_to_main(lc.close), up ? IM_COL32(82,196,26,255) : IM_COL32(255,77,79,255), true, std::string(tbuf) });
-                auto push_line = [&](const std::vector<double>& s, bool enabled, ImU32 col, const char* name){ if (!enabled) return; double v=s[last]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); main_labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
+                auto push_line = [&](const std::vector<double>& s, bool enabled, ImU32 col, const char* name){ if (!enabled) return; double v=s[label_idx]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); main_labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
                 push_line(sma_v, opt.show_sma20, IM_COL32(255,193,7,255), "SMA");
                 push_line(ema_v, opt.show_ema50, IM_COL32(24,144,255,255), "EMA");
                 draw_labels(main_labels, main_pos, main_size);
@@ -600,15 +606,15 @@ int main(int, char**)
                     double vmax = 0.0; for (int i=begin;i<end;++i) vmax = std::max(vmax, candles[i].volume);
                     auto vy = [&](double v){ float t=(float)(v / (vmax + 1e-9)); return vol_pos.y + (1.0f - t) * vol_size.y; };
                     std::vector<Label> vol_labels;
-                    char vb[64]; snprintf(vb, sizeof(vb), "VOL %.0f", candles[last].volume);
-                    vol_labels.push_back({ vy(candles[last].volume), IM_COL32(180,180,180,220), false, std::string(vb) });
+                    char vb[64]; snprintf(vb, sizeof(vb), "VOL %.0f", candles[label_idx].volume);
+                    vol_labels.push_back({ vy(candles[label_idx].volume), IM_COL32(180,180,180,220), false, std::string(vb) });
                     draw_labels(vol_labels, vol_pos, vol_size);
                 }
 
                 // RSI label (hollow, same color as RSI line)
                 if (opt.show_rsi) {
                     auto rsi_y = [&](double v){ return rsi_pos.y + (float)((100.0 - v) / 100.0) * rsi_size.y; };
-                    double rv = rsi_v[last];
+                    double rv = rsi_v[label_idx];
                     if (!std::isnan(rv)) {
                         std::vector<Label> rsi_labels;
                         char rb[64]; snprintf(rb, sizeof(rb), "RSI %.2f", rv);
@@ -623,9 +629,9 @@ int main(int, char**)
                     mmin = std::min(mmin, 0.0); mmax = std::max(mmax, 0.0);
                     auto macd_y = [&](double v){ float t=(float)((v - mmin) / (mmax - mmin + 1e-9)); return macd_pos.y + (1.0f - t) * macd_size.y; };
                     std::vector<Label> macd_labels;
-                    double mv = macd_line[last]; if (!std::isnan(mv)) { char b[64]; snprintf(b, sizeof(b), "MACD %.4f", mv); macd_labels.push_back({ macd_y(mv), IM_COL32(255,255,255,220), false, std::string(b) }); }
-                    double sg = signal_line[last]; if (!std::isnan(sg)) { char b[64]; snprintf(b, sizeof(b), "Sig %.4f", sg); macd_labels.push_back({ macd_y(sg), IM_COL32(255,215,0,220), false, std::string(b) }); }
-                    double hv = hist[last]; if (!std::isnan(hv)) { ImU32 hc = hv>=0? IM_COL32(0,200,0,220) : IM_COL32(220,0,0,220); char b[64]; snprintf(b, sizeof(b), "Hist %.4f", hv); macd_labels.push_back({ macd_y(hv), hc, false, std::string(b) }); }
+                    double mv = macd_line[label_idx]; if (!std::isnan(mv)) { char b[64]; snprintf(b, sizeof(b), "MACD %.4f", mv); macd_labels.push_back({ macd_y(mv), IM_COL32(255,255,255,220), false, std::string(b) }); }
+                    double sg = signal_line[label_idx]; if (!std::isnan(sg)) { char b[64]; snprintf(b, sizeof(b), "Sig %.4f", sg); macd_labels.push_back({ macd_y(sg), IM_COL32(255,215,0,220), false, std::string(b) }); }
+                    double hv = hist[label_idx]; if (!std::isnan(hv)) { ImU32 hc = hv>=0? IM_COL32(0,200,0,220) : IM_COL32(220,0,0,220); char b[64]; snprintf(b, sizeof(b), "Hist %.4f", hv); macd_labels.push_back({ macd_y(hv), hc, false, std::string(b) }); }
                     draw_labels(macd_labels, macd_pos, macd_size);
                 }
             }
@@ -693,6 +699,9 @@ int main(int, char**)
         ImGui::Checkbox("MACD", &opt.show_macd);
         ImGui::Checkbox("RSI", &opt.show_rsi);
         ImGui::Checkbox("Volume", &opt.show_volume);
+    ImGui::Separator();
+    ImGui::Text("Labels");
+    ImGui::Checkbox("右侧浮标跟随光标索引", &opt.labels_follow_cursor);
         ImGui::Separator();
         ImGui::Text("Crosshair: %s (L-Click to toggle)", crosshair_visible ? "ON" : "OFF");
         ImGui::Separator();
