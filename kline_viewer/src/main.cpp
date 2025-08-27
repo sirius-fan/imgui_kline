@@ -60,6 +60,10 @@ struct ChartOptions {
     bool labels_follow_cursor = false; // when true, right-side floating labels follow crosshair index
     bool show_close_line = false;      // show close price as a line on main chart
     bool show_boll = false;            // show Bollinger Bands
+    // BOLL styles
+    ImVec4 boll_mid_color = ImVec4(0.77f, 0.35f, 0.94f, 0.86f); // ~ IM_COL32(197,90,240,220)
+    ImVec4 boll_band_color = ImVec4(0.77f, 0.35f, 0.94f, 0.55f); // ~ IM_COL32(197,90,240,140)
+    float  boll_thickness = 1.6f;
 };
 
 static void glfw_error_callback(int error, const char *description) {
@@ -198,7 +202,8 @@ static void draw_candles(const std::vector<Candle> &data, const ViewState &vs, c
 
 static void draw_line_series(const std::vector<double> &series, const ViewState &vs,
                              const ImVec2 &canvas_pos, const ImVec2 &canvas_size,
-                             int begin, int end, float y_min, float y_max, ImU32 col) {
+                             int begin, int end, float y_min, float y_max, ImU32 col,
+                             float thickness = 1.5f) {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const float H = canvas_size.y;
     auto y_to_screen = [&](double y) {
@@ -216,7 +221,7 @@ static void draw_line_series(const std::vector<double> &series, const ViewState 
         float x = canvas_pos.x + (i - vs.scroll_x) * vs.scale_x;
         float y = y_to_screen(v);
         ImVec2 cur(x, y);
-        if (has_prev) dl->AddLine(prev, cur, col, 1.5f);
+    if (has_prev) dl->AddLine(prev, cur, col, thickness);
         prev = cur;
         has_prev = true;
     }
@@ -484,13 +489,13 @@ int main(int, char **) {
         draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
-    if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
+        if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
         if (opt.show_boll) {
-            ImU32 col_mid = IM_COL32(197, 90, 240, 220);
-            ImU32 col_band = IM_COL32(197, 90, 240, 140);
-            draw_line_series(boll_up,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band);
-            draw_line_series(boll_mid, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_mid);
-            draw_line_series(boll_dn,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band);
+            ImU32 col_mid  = ImGui::ColorConvertFloat4ToU32(opt.boll_mid_color);
+            ImU32 col_band = ImGui::ColorConvertFloat4ToU32(opt.boll_band_color);
+            draw_line_series(boll_up,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
+            draw_line_series(boll_mid, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_mid,  opt.boll_thickness);
+            draw_line_series(boll_dn,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
         }
         dl->PopClipRect();
 
@@ -700,6 +705,20 @@ int main(int, char **) {
             }
             // RSI
             ImGui::TextColored(col_rsi, "RSI(%d): %s", rsi_period, rs);
+            // BOLL values
+            if (opt.show_boll) {
+                auto C = [](ImVec4 v){ return v; };
+                char bu[32], bm[32], bl[32];
+                format_opt(boll_up[cross_idx], bu, sizeof(bu));
+                format_opt(boll_mid[cross_idx], bm, sizeof(bm));
+                format_opt(boll_dn[cross_idx], bl, sizeof(bl));
+                ImVec4 col_mid  = opt.boll_mid_color;
+                ImVec4 col_band = opt.boll_band_color;
+                ImGui::Text("BOLL(%d,%.2f):", boll_period, boll_k);
+                ImGui::SameLine(); ImGui::TextColored(C(col_mid),  "Mid %s", bm);
+                ImGui::SameLine(); ImGui::TextColored(C(col_band), " Up %s", bu);
+                ImGui::SameLine(); ImGui::TextColored(C(col_band), " Low %s", bl);
+            }
             ImGui::EndChild();
         }
 
@@ -795,6 +814,17 @@ int main(int, char **) {
                 auto push_line = [&](const std::vector<double> &s, bool enabled, ImU32 col, const char *name) { if (!enabled) return; double v=s[label_idx]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); main_labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
                 push_line(sma_v, opt.show_sma20, IM_COL32(255, 193, 7, 255), "SMA");
                 push_line(ema_v, opt.show_ema50, IM_COL32(24, 144, 255, 255), "EMA");
+                // BOLL labels (hollow)
+                if (opt.show_boll) {
+                    ImU32 col_mid  = ImGui::ColorConvertFloat4ToU32(opt.boll_mid_color);
+                    ImU32 col_band = ImGui::ColorConvertFloat4ToU32(opt.boll_band_color);
+                    double vup = boll_up[label_idx];
+                    double vm  = boll_mid[label_idx];
+                    double vdn = boll_dn[label_idx];
+                    if (!std::isnan(vup)) { char b[64]; snprintf(b, sizeof(b), "BOLL U %.4f", vup); main_labels.push_back({ y_to_main(vup), col_band, false, std::string(b) }); }
+                    if (!std::isnan(vm))  { char b[64]; snprintf(b, sizeof(b), "BOLL M %.4f", vm);  main_labels.push_back({ y_to_main(vm),  col_mid,  false, std::string(b) }); }
+                    if (!std::isnan(vdn)) { char b[64]; snprintf(b, sizeof(b), "BOLL L %.4f", vdn); main_labels.push_back({ y_to_main(vdn), col_band, false, std::string(b) }); }
+                }
                 draw_labels(main_labels, main_pos, main_size);
 
                 // Volume labels (hollow)
@@ -939,8 +969,12 @@ int main(int, char **) {
         dirty |= ImGui::SliderInt("MACD slow", &macd_slow, 3, 200);
         dirty |= ImGui::SliderInt("MACD signal", &macd_signal, 2, 100);
         dirty |= ImGui::SliderInt("RSI period", &rsi_period, 2, 200);
-        dirty |= ImGui::SliderInt("BOLL period", &boll_period, 2, 300);
-        dirty |= ImGui::SliderFloat("BOLL k", &boll_k, 0.5f, 4.0f, "%.2f");
+    dirty |= ImGui::SliderInt("BOLL period", &boll_period, 2, 300);
+    dirty |= ImGui::SliderFloat("BOLL k", &boll_k, 0.5f, 4.0f, "%.2f");
+    // BOLL style (no recompute required)
+    ImGui::ColorEdit4("BOLL Mid Color", &opt.boll_mid_color.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::ColorEdit4("BOLL Band Color", &opt.boll_band_color.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::SliderFloat("BOLL thickness", &opt.boll_thickness, 0.5f, 4.0f, "%.2f");
         if (dirty) {
             sma_period = std::min(sma_period, (int)closes.size());
             ema_period = std::min(ema_period, (int)closes.size());
