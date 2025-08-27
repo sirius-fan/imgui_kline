@@ -342,6 +342,29 @@ int main(int, char**)
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
     dl->PopClipRect();
 
+        // Price scale labels in the right margin for the main chart
+        {
+            dl->PushClipRect(ImVec2(margin_x0, main_pos.y), ImVec2(margin_x1, main_pos.y + main_size.y), true);
+            int h_lines = 6; // match grid lines count
+            double rng = (y_max - y_min);
+            int decimals = (rng < 1.0 ? 4 : (rng < 10.0 ? 3 : 2));
+            for (int i=0; i<=h_lines; ++i) {
+                float t = (float)i / (float)h_lines;
+                float y = main_pos.y + (1.0f - t) * main_size.y;
+                double price = y_max + (y_min - y_max) * t;
+                char buf[32];
+                if (decimals == 4) snprintf(buf, sizeof(buf), "%.4f", price);
+                else if (decimals == 3) snprintf(buf, sizeof(buf), "%.3f", price);
+                else snprintf(buf, sizeof(buf), "%.2f", price);
+                // small tick on the margin boundary
+                dl->AddLine(ImVec2(margin_x0 + 1.0f, y), ImVec2(margin_x0 + 6.0f, y), IM_COL32(150,150,150,160));
+                ImVec2 ts = ImGui::CalcTextSize(buf);
+                float ty = y - ts.y * 0.5f;
+                dl->AddText(ImVec2(margin_x0 + 8.0f, ty), IM_COL32(200,200,200,220), buf);
+            }
+            dl->PopClipRect();
+        }
+
         // Volume bars
         if (opt.show_volume) {
             dl->PushClipRect(vol_pos, ImVec2(vol_pos.x + vol_size.x, vol_pos.y + vol_size.y), true);
