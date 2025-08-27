@@ -256,6 +256,12 @@ int main(int, char**)
     if (canvas_size.x < 50) canvas_size.x = 50;
     if (canvas_size.y < 200) canvas_size.y = 200; // need room for subplots
 
+    // Reserve a right-side margin for floating labels so they don't overlap the plots
+    const float right_margin = 110.0f; // px
+    float plot_width = std::max(10.0f, canvas_size.x - right_margin);
+    float margin_x0 = canvas_pos.x + plot_width;
+    float margin_x1 = canvas_pos.x + canvas_size.x;
+
     // Layout: main, optional RSI, optional MACD stacked vertically
     const float spacing = 6.0f;
     const float vol_h  = opt.show_volume ? 80.0f  : 0.0f;
@@ -265,16 +271,16 @@ int main(int, char**)
     float main_h = canvas_size.y - vol_h - rsi_h - macd_h - spacing * gaps;
     if (main_h < 120.0f) main_h = 120.0f;
     ImVec2 main_pos = canvas_pos;
-    ImVec2 main_size = ImVec2(canvas_size.x, main_h);
+    ImVec2 main_size = ImVec2(plot_width, main_h);
     ImVec2 vol_pos = ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_volume ? spacing : 0.0f));
-    ImVec2 vol_size = ImVec2(canvas_size.x, vol_h);
+    ImVec2 vol_size = ImVec2(plot_width, vol_h);
     ImVec2 rsi_pos = opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_rsi ? spacing : 0.0f))
                      : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_rsi ? spacing : 0.0f));
-    ImVec2 rsi_size = ImVec2(canvas_size.x, rsi_h);
+    ImVec2 rsi_size = ImVec2(plot_width, rsi_h);
     ImVec2 macd_pos = (opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + (opt.show_macd ? spacing : 0.0f))
                     : (opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_macd ? spacing : 0.0f))
                                : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_macd ? spacing : 0.0f))));
-    ImVec2 macd_size = ImVec2(canvas_size.x, macd_h);
+    ImVec2 macd_size = ImVec2(plot_width, macd_h);
 
         // Interaction: mouse wheel zoom/scroll
         ImGuiIO& io = ImGui::GetIO();
@@ -305,8 +311,8 @@ int main(int, char**)
         }
 
         // Determine visible range
-        int begin = std::max(0, (int)std::floor(vs.scroll_x));
-        int count = (int)std::ceil(canvas_size.x / vs.scale_x) + 2;
+    int begin = std::max(0, (int)std::floor(vs.scroll_x));
+    int count = (int)std::ceil(main_size.x / vs.scale_x) + 2; // based on plot width only
         int end = std::min((int)candles.size(), begin + count);
 
         // Compute y-range for visible candles
@@ -325,6 +331,8 @@ int main(int, char**)
     if (opt.show_volume) rect(vol_pos,  vol_size);
     if (opt.show_rsi)  dl->AddRect(rsi_pos,  ImVec2(rsi_pos.x+rsi_size.x,   rsi_pos.y+rsi_size.y),   IM_COL32(100,100,100,150));
     if (opt.show_macd) dl->AddRect(macd_pos, ImVec2(macd_pos.x+macd_size.x, macd_pos.y+macd_size.y), IM_COL32(100,100,100,150));
+    // Margin separator
+    dl->AddLine(ImVec2(margin_x0, canvas_pos.y), ImVec2(margin_x0, canvas_pos.y + canvas_size.y), IM_COL32(100,100,100,120));
 
     // Main chart
     draw_grid(main_pos, ImVec2(main_pos.x+main_size.x, main_pos.y+main_size.y), (float)y_min, (float)y_max);
@@ -443,7 +451,7 @@ int main(int, char**)
         }
 
         // Time axis at the very bottom panel (whichever is last visible)
-        ImVec2 axis_pos = main_pos; ImVec2 axis_size = main_size;
+    ImVec2 axis_pos = main_pos; ImVec2 axis_size = main_size;
         if (opt.show_volume) { axis_pos = vol_pos; axis_size = vol_size; }
         if (opt.show_rsi)    { axis_pos = rsi_pos; axis_size = rsi_size; }
         if (opt.show_macd)   { axis_pos = macd_pos; axis_size = macd_size; }
@@ -461,44 +469,79 @@ int main(int, char**)
             dl->AddText(ImVec2(x - sz.x*0.5f, axis_y - sz.y - 8.0f), IM_COL32(180,180,180,220), label);
         }
 
-
-        // Right-side ruler labels at last visible candle
+        // Right-side floating labels in the reserved margin for each panel (doesn't overlap plots)
         {
             int last = std::max(begin, end - 1);
             if (last >= begin && last < end) {
-                auto y_to_main = [&](double y){ float ty = (float)((y - y_min) / (y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
                 struct Label { float y; ImU32 col; bool filled; std::string text; };
-                std::vector<Label> labels;
+                auto draw_labels = [&](const std::vector<Label>& in, ImVec2 panel_pos, ImVec2 panel_size){
+                    if (in.empty()) return;
+                    std::vector<Label> labels = in;
+                    std::sort(labels.begin(), labels.end(), [](const Label& a, const Label& b){ return a.y < b.y; });
+                    float label_h = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+                    for (size_t i=1;i<labels.size();++i){ if (labels[i].y - labels[i-1].y < label_h) labels[i].y = labels[i-1].y + label_h; }
+                    for (auto& L: labels) { if (L.y < panel_pos.y) L.y = panel_pos.y; if (L.y > panel_pos.y + panel_size.y - label_h) L.y = panel_pos.y + panel_size.y - label_h; }
+                    float x0 = margin_x0 + 4.0f, x1 = margin_x1 - 4.0f;
+                    for (auto& L: labels) {
+                        ImVec2 ts = ImGui::CalcTextSize(L.text.c_str());
+                        float w = ts.x + 12.0f, h = ts.y + 6.0f;
+                        ImVec2 p1 = ImVec2(x1 - w, L.y);
+                        ImVec2 p2 = ImVec2(x1, L.y + h);
+                        if (L.filled) {
+                            dl->AddRectFilled(p1, p2, L.col, 4.0f);
+                            dl->AddRect(p1, p2, IM_COL32(0,0,0,180), 4.0f, 0, 1.0f);
+                            dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), IM_COL32(255,255,255,255), L.text.c_str());
+                        } else {
+                            dl->AddRect(p1, p2, L.col, 4.0f, 0, 1.5f);
+                            dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), L.col, L.text.c_str());
+                        }
+                    }
+                };
+
+                // Main panel labels (price filled, SMA/EMA hollow)
+                auto y_to_main = [&](double y){ float ty = (float)((y - y_min) / (y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
+                std::vector<Label> main_labels;
                 const Candle& lc = candles[last];
                 bool up = lc.close >= lc.open;
                 char tbuf[64]; snprintf(tbuf, sizeof(tbuf), "%.4f", lc.close);
-                labels.push_back({ y_to_main(lc.close), up ? IM_COL32(82,196,26,255) : IM_COL32(255,77,79,255), true, std::string(tbuf) });
-                // Indicators
-                auto push_line = [&](const std::vector<double>& s, bool enabled, ImU32 col, const char* name){ if (!enabled) return; double v=s[last]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
+                main_labels.push_back({ y_to_main(lc.close), up ? IM_COL32(82,196,26,255) : IM_COL32(255,77,79,255), true, std::string(tbuf) });
+                auto push_line = [&](const std::vector<double>& s, bool enabled, ImU32 col, const char* name){ if (!enabled) return; double v=s[last]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); main_labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
                 push_line(sma_v, opt.show_sma20, IM_COL32(255,193,7,255), "SMA");
                 push_line(ema_v, opt.show_ema50, IM_COL32(24,144,255,255), "EMA");
+                draw_labels(main_labels, main_pos, main_size);
 
-                // Layout to avoid overlaps
-                std::sort(labels.begin(), labels.end(), [](const Label& a, const Label& b){ return a.y < b.y; });
-                float label_h = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
-                for (size_t i=1;i<labels.size();++i){ if (labels[i].y - labels[i-1].y < label_h) labels[i].y = labels[i-1].y + label_h; }
-                // Clamp to panel
-                for (auto& L: labels) { if (L.y < main_pos.y) L.y = main_pos.y; if (L.y > main_pos.y + main_size.y - label_h) L.y = main_pos.y + main_size.y - label_h; }
+                // Volume labels (hollow)
+                if (opt.show_volume) {
+                    double vmax = 0.0; for (int i=begin;i<end;++i) vmax = std::max(vmax, candles[i].volume);
+                    auto vy = [&](double v){ float t=(float)(v / (vmax + 1e-9)); return vol_pos.y + (1.0f - t) * vol_size.y; };
+                    std::vector<Label> vol_labels;
+                    char vb[64]; snprintf(vb, sizeof(vb), "VOL %.0f", candles[last].volume);
+                    vol_labels.push_back({ vy(candles[last].volume), IM_COL32(180,180,180,220), false, std::string(vb) });
+                    draw_labels(vol_labels, vol_pos, vol_size);
+                }
 
-                float x_right = main_pos.x + main_size.x - 1.0f;
-                for (auto& L: labels) {
-                    ImVec2 ts = ImGui::CalcTextSize(L.text.c_str());
-                    float w = ts.x + 12.0f, h = ts.y + 6.0f;
-                    ImVec2 p1 = ImVec2(x_right - w, L.y);
-                    ImVec2 p2 = ImVec2(x_right, L.y + h);
-                    if (L.filled) {
-                        dl->AddRectFilled(p1, p2, L.col, 4.0f);
-                        dl->AddRect(p1, p2, IM_COL32(0,0,0,180), 4.0f, 0, 1.0f);
-                        dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), IM_COL32(255,255,255,255), L.text.c_str());
-                    } else {
-                        dl->AddRect(p1, p2, L.col, 4.0f, 0, 1.5f);
-                        dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), L.col, L.text.c_str());
+                // RSI label (hollow, same color as RSI line)
+                if (opt.show_rsi) {
+                    auto rsi_y = [&](double v){ return rsi_pos.y + (float)((100.0 - v) / 100.0) * rsi_size.y; };
+                    double rv = rsi_v[last];
+                    if (!std::isnan(rv)) {
+                        std::vector<Label> rsi_labels;
+                        char rb[64]; snprintf(rb, sizeof(rb), "RSI %.2f", rv);
+                        rsi_labels.push_back({ rsi_y(rv), IM_COL32(64,158,255,255), false, std::string(rb) });
+                        draw_labels(rsi_labels, rsi_pos, rsi_size);
                     }
+                }
+
+                // MACD labels (hollow). Colors: line white, signal gold, hist green/red by sign
+                if (opt.show_macd) {
+                    double mmin=1e9, mmax=-1e9; for (int i=begin;i<end;++i){ mmin=std::min({mmin, macd_line[i], signal_line[i], hist[i]}); mmax=std::max({mmax, macd_line[i], signal_line[i], hist[i]}); }
+                    mmin = std::min(mmin, 0.0); mmax = std::max(mmax, 0.0);
+                    auto macd_y = [&](double v){ float t=(float)((v - mmin) / (mmax - mmin + 1e-9)); return macd_pos.y + (1.0f - t) * macd_size.y; };
+                    std::vector<Label> macd_labels;
+                    double mv = macd_line[last]; if (!std::isnan(mv)) { char b[64]; snprintf(b, sizeof(b), "MACD %.4f", mv); macd_labels.push_back({ macd_y(mv), IM_COL32(255,255,255,220), false, std::string(b) }); }
+                    double sg = signal_line[last]; if (!std::isnan(sg)) { char b[64]; snprintf(b, sizeof(b), "Sig %.4f", sg); macd_labels.push_back({ macd_y(sg), IM_COL32(255,215,0,220), false, std::string(b) }); }
+                    double hv = hist[last]; if (!std::isnan(hv)) { ImU32 hc = hv>=0? IM_COL32(0,200,0,220) : IM_COL32(220,0,0,220); char b[64]; snprintf(b, sizeof(b), "Hist %.4f", hv); macd_labels.push_back({ macd_y(hv), hc, false, std::string(b) }); }
+                    draw_labels(macd_labels, macd_pos, macd_size);
                 }
             }
         }
