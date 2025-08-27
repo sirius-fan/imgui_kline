@@ -57,6 +57,7 @@ struct ChartOptions {
     bool show_rsi = true;
     bool show_volume = true;
     bool labels_follow_cursor = false; // when true, right-side floating labels follow crosshair index
+    bool show_close_line = false; // show close price as a line on main chart
 };
 
 static void glfw_error_callback(int error, const char *description) {
@@ -445,9 +446,10 @@ int main(int, char **) {
         // Main chart (clip to plot area)
         dl->PushClipRect(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), true);
         draw_grid(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), (float)y_min, (float)y_max);
-        draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
+    draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
+    if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
         dl->PopClipRect();
 
         // Price scale labels in the right margin for the main chart
@@ -879,6 +881,7 @@ int main(int, char **) {
         ImGui::Checkbox("MACD", &opt.show_macd);
         ImGui::Checkbox("RSI", &opt.show_rsi);
         ImGui::Checkbox("Volume", &opt.show_volume);
+    ImGui::Checkbox("Close line", &opt.show_close_line);
         ImGui::Separator();
         ImGui::Text("Labels");
         ImGui::Checkbox("右侧浮标跟随光标索引", &opt.labels_follow_cursor);
