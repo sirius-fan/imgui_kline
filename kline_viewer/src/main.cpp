@@ -423,15 +423,17 @@ int main(int, char**)
             format_opt(signal_line[cross_idx], sg, sizeof(sg));
             format_opt(hist[cross_idx], hs, sizeof(hs));
             format_opt(rsi_v[cross_idx], rs, sizeof(rs));
+            char dt[64]; format_time_label(c.time, dt, sizeof(dt), true);
             snprintf(buf1, sizeof(buf1),
-                     "Idx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
+                     "Date: %s\nIdx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
+                     dt,
                      cross_idx, c.open, c.high, c.low, c.close, c.volume,
                      sma_period, sv, ema_period, ev,
                      macd_fast, macd_slow, macd_signal, mv, sg, hs,
                      rsi_period, rs);
             ImVec2 box_pos = ImVec2(main_pos.x + 8, main_pos.y + 8);
             ImGui::SetCursorScreenPos(box_pos);
-            ImGui::BeginChild("DataBox", ImVec2(320, ImGui::GetTextLineHeightWithSpacing()*5.5f), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+            ImGui::BeginChild("DataBox", ImVec2(360, ImGui::GetTextLineHeightWithSpacing()*7.5f), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
             ImGui::TextUnformatted(buf1);
             ImGui::EndChild();
         }
@@ -455,25 +457,25 @@ int main(int, char**)
             dl->AddText(ImVec2(x - sz.x*0.5f, axis_y - sz.y - 8.0f), IM_COL32(180,180,180,220), label);
         }
 
-        // UI controls
-        ImGui::SetCursorScreenPos(ImVec2(canvas_pos.x+8, canvas_pos.y+8));
-    ImGui::BeginChild("Legend", ImVec2(320,300), ImGuiChildFlags_Border);
+
+        ImGui::End();
+
+        // Separate Legend window
+        ImGui::Begin("Legend");
         ImGui::Text("K-Line Viewer");
-    ImGui::Text("Candles: %zu", candles.size());
-    ImGui::Text("Data: %s", active_csv.c_str());
+        ImGui::Text("Candles: %zu", candles.size());
+        ImGui::Text("Data: %s", active_csv.c_str());
         ImGui::SliderFloat("Scale X", &vs.scale_x, 1.5f, 30.0f);
         ImGui::Text("Scroll: %.1f", vs.scroll_x);
-    ImGui::Separator();
-    ImGui::Text("Indicators");
-    ImGui::Checkbox("SMA20", &opt.show_sma20);
-    ImGui::Checkbox("EMA50", &opt.show_ema50);
-    ImGui::Checkbox("MACD", &opt.show_macd);
-    ImGui::Checkbox("RSI", &opt.show_rsi);
+        ImGui::Separator();
+        ImGui::Text("Indicators");
+        ImGui::Checkbox("SMA20", &opt.show_sma20);
+        ImGui::Checkbox("EMA50", &opt.show_ema50);
+        ImGui::Checkbox("MACD", &opt.show_macd);
+        ImGui::Checkbox("RSI", &opt.show_rsi);
         ImGui::Checkbox("Volume", &opt.show_volume);
-    ImGui::Separator();
-    ImGui::Text("Crosshair: %s (L-Click to toggle)", crosshair_visible ? "ON" : "OFF");
-
-        // Parameters panel
+        ImGui::Separator();
+        ImGui::Text("Crosshair: %s (L-Click to toggle)", crosshair_visible ? "ON" : "OFF");
         ImGui::Separator();
         ImGui::Text("Parameters");
         bool dirty = false;
@@ -493,32 +495,24 @@ int main(int, char**)
             ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
             ind::rsi(closes, rsi_period, rsi_v);
         }
-        // File loader UI
-        static char file_buf[512] = "";
-        if (file_buf[0] == '\0') {
-            std::snprintf(file_buf, sizeof(file_buf), "%s", active_csv.c_str());
-        }
         ImGui::Separator();
         ImGui::Text("Load CSV");
-        ImGui::InputText("##csvpath", file_buf, sizeof(file_buf));
-        ImGui::SameLine();
+        static char file_buf[512] = "";
+        if (file_buf[0] == '\0') std::snprintf(file_buf, sizeof(file_buf), "%s", active_csv.c_str());
+        ImGui::InputText("##csvpath", file_buf, sizeof(file_buf)); ImGui::SameLine();
         if (ImGui::Button("Load")) {
             std::vector<Candle> tmp;
             if (load_csv_sh_index(file_buf, tmp)) {
                 candles.swap(tmp);
                 active_csv = file_buf;
-                // rebuild closes & indicators
                 closes.clear(); closes.reserve(candles.size());
-                for (auto& c: candles) closes.push_back(c.close);
+                for (auto& c2: candles) closes.push_back(c2.close);
                 sma_v = ind::sma(closes, sma_period);
                 ema_v = ind::ema(closes, ema_period);
                 ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
                 ind::rsi(closes, rsi_period, rsi_v);
-                // adjust scroll to end
-                vs.scroll_x = std::max(0.0f, (float)candles.size() - (ImGui::GetContentRegionAvail().x / vs.scale_x));
             }
         }
-        ImGui::EndChild();
 
         ImGui::End();
 
