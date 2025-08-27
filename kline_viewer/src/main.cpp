@@ -11,7 +11,6 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
-#include <iomanip>
 #include <ctime>
 
 #include <GLFW/glfw3.h>
@@ -424,16 +423,21 @@ int main(int, char**)
             format_opt(hist[cross_idx], hs, sizeof(hs));
             format_opt(rsi_v[cross_idx], rs, sizeof(rs));
             char dt[64]; format_time_label(c.time, dt, sizeof(dt), true);
+            // Change percentage vs previous close
+            double chg_pct = NAN; double chg_abs = NAN;
+            if (cross_idx > 0) { double pc = candles[cross_idx-1].close; if (pc != 0.0) { chg_abs = c.close - pc; chg_pct = chg_abs / pc * 100.0; } }
             snprintf(buf1, sizeof(buf1),
-                     "Date: %s\nIdx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
+                     "Date: %s\nIdx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nChg: %s%.4f (%s%.2f%%)\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
                      dt,
                      cross_idx, c.open, c.high, c.low, c.close, c.volume,
+                     (chg_abs>=0?"+":""), (std::isnan(chg_abs)?0.0:chg_abs),
+                     (chg_pct>=0?"+":""), (std::isnan(chg_pct)?0.0:chg_pct),
                      sma_period, sv, ema_period, ev,
                      macd_fast, macd_slow, macd_signal, mv, sg, hs,
                      rsi_period, rs);
             ImVec2 box_pos = ImVec2(main_pos.x + 8, main_pos.y + 8);
             ImGui::SetCursorScreenPos(box_pos);
-            ImGui::BeginChild("DataBox", ImVec2(360, ImGui::GetTextLineHeightWithSpacing()*7.5f), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+            ImGui::BeginChild("DataBox", ImVec2(460, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
             ImGui::TextUnformatted(buf1);
             ImGui::EndChild();
         }
@@ -457,6 +461,47 @@ int main(int, char**)
             dl->AddText(ImVec2(x - sz.x*0.5f, axis_y - sz.y - 8.0f), IM_COL32(180,180,180,220), label);
         }
 
+
+        // Right-side ruler labels at last visible candle
+        {
+            int last = std::max(begin, end - 1);
+            if (last >= begin && last < end) {
+                auto y_to_main = [&](double y){ float ty = (float)((y - y_min) / (y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
+                struct Label { float y; ImU32 col; bool filled; std::string text; };
+                std::vector<Label> labels;
+                const Candle& lc = candles[last];
+                bool up = lc.close >= lc.open;
+                char tbuf[64]; snprintf(tbuf, sizeof(tbuf), "%.4f", lc.close);
+                labels.push_back({ y_to_main(lc.close), up ? IM_COL32(82,196,26,255) : IM_COL32(255,77,79,255), true, std::string(tbuf) });
+                // Indicators
+                auto push_line = [&](const std::vector<double>& s, bool enabled, ImU32 col, const char* name){ if (!enabled) return; double v=s[last]; if (std::isnan(v)) return; char b[64]; snprintf(b, sizeof(b), "%s %.4f", name, v); labels.push_back({ y_to_main(v), col, false, std::string(b) }); };
+                push_line(sma_v, opt.show_sma20, IM_COL32(255,193,7,255), "SMA");
+                push_line(ema_v, opt.show_ema50, IM_COL32(24,144,255,255), "EMA");
+
+                // Layout to avoid overlaps
+                std::sort(labels.begin(), labels.end(), [](const Label& a, const Label& b){ return a.y < b.y; });
+                float label_h = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+                for (size_t i=1;i<labels.size();++i){ if (labels[i].y - labels[i-1].y < label_h) labels[i].y = labels[i-1].y + label_h; }
+                // Clamp to panel
+                for (auto& L: labels) { if (L.y < main_pos.y) L.y = main_pos.y; if (L.y > main_pos.y + main_size.y - label_h) L.y = main_pos.y + main_size.y - label_h; }
+
+                float x_right = main_pos.x + main_size.x - 1.0f;
+                for (auto& L: labels) {
+                    ImVec2 ts = ImGui::CalcTextSize(L.text.c_str());
+                    float w = ts.x + 12.0f, h = ts.y + 6.0f;
+                    ImVec2 p1 = ImVec2(x_right - w, L.y);
+                    ImVec2 p2 = ImVec2(x_right, L.y + h);
+                    if (L.filled) {
+                        dl->AddRectFilled(p1, p2, L.col, 4.0f);
+                        dl->AddRect(p1, p2, IM_COL32(0,0,0,180), 4.0f, 0, 1.0f);
+                        dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), IM_COL32(255,255,255,255), L.text.c_str());
+                    } else {
+                        dl->AddRect(p1, p2, L.col, 4.0f, 0, 1.5f);
+                        dl->AddText(ImVec2(p1.x + 6.0f, p1.y + 3.0f), L.col, L.text.c_str());
+                    }
+                }
+            }
+        }
 
         ImGui::End();
 
