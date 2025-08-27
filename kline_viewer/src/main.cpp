@@ -12,10 +12,33 @@
 #include <fstream>
 #include <sstream>
 #include <ctime>
+#include <cstring>
 
 #include <GLFW/glfw3.h>
 
 #include "indicators.hpp"
+
+// Find nearest candle index by time using binary search (candles sorted by time ascending)
+static int find_nearest_index_by_time(const std::vector<Candle>& cs, std::time_t t)
+{
+    if (cs.empty()) return -1;
+    int lo = 0, hi = (int)cs.size();
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        std::time_t mt = (std::time_t)cs[mid].time;
+        if (mt < t) lo = mid + 1; else hi = mid;
+    }
+    int pos = lo;
+    if (pos >= (int)cs.size()) return (int)cs.size() - 1;
+    if (pos > 0) {
+        std::time_t t1 = (std::time_t)cs[pos].time;
+        std::time_t t0 = (std::time_t)cs[pos-1].time;
+        long long d0 = std::llabs((long long)t - (long long)t0);
+        long long d1 = std::llabs((long long)t - (long long)t1);
+        return (d0 <= d1) ? (pos - 1) : pos;
+    }
+    return pos;
+}
 
 struct ViewState {
     float scale_x = 6.0f;     // pixels per candle
@@ -608,6 +631,51 @@ int main(int, char**)
             }
         }
 
+        ImGui::End();
+
+        // Jump window: jump to date/time or to oldest/newest
+        ImGui::Begin("Jump");
+        static char date_buf[16] = "";   // YYYY-MM-DD
+        static char time_buf[8]  = "";   // HH:MM
+        // prefill with current crosshair candle date/time or latest candle if empty
+        if (date_buf[0] == '\0' || time_buf[0] == '\0') {
+            int seed_idx = (cross_idx >= 0 ? cross_idx : (int)candles.size()-1);
+            seed_idx = std::clamp(seed_idx, 0, (int)candles.size()-1);
+            if (!candles.empty()) {
+                char tmp[64]; format_time_label(candles[seed_idx].time, tmp, sizeof(tmp), true);
+                // split into date and time
+                // expected format: YYYY-MM-DD HH:MM
+                const char* sp = std::strchr(tmp, ' ');
+                if (sp) {
+                    std::snprintf(date_buf, sizeof(date_buf), "%.*s", (int)(sp - tmp), tmp);
+                    std::snprintf(time_buf, sizeof(time_buf), "%s", sp + 1);
+                }
+            }
+        }
+        ImGui::InputText("Date (YYYY-MM-DD)", date_buf, sizeof(date_buf));
+        ImGui::SameLine();
+        ImGui::InputText("Time (HH:MM)", time_buf, sizeof(time_buf));
+        bool jump_clicked = ImGui::Button("Jump");
+        ImGui::SameLine();
+        bool first_clicked = ImGui::Button("<< Oldest");
+        ImGui::SameLine();
+        bool last_clicked = ImGui::Button("Newest >>");
+        int jump_to_idx = -1;
+        if (jump_clicked) {
+            std::time_t tt{};
+            if (parse_datetime_to_time_t(date_buf, time_buf, tt)) {
+                jump_to_idx = find_nearest_index_by_time(candles, tt);
+            }
+        }
+        if (first_clicked && !candles.empty()) jump_to_idx = 0;
+        if (last_clicked && !candles.empty()) jump_to_idx = (int)candles.size() - 1;
+        if (jump_to_idx >= 0) {
+            // Center the selected index in the main plot width
+            float visible_count = std::max(1.0f, main_size.x / std::max(1.0f, vs.scale_x));
+            float center_offset = visible_count * 0.5f;
+            float upper = std::max(0.0f, (float)candles.size() - visible_count);
+            vs.scroll_x = std::clamp((float)jump_to_idx - center_offset, 0.0f, upper);
+        }
         ImGui::End();
 
         // Separate Legend window
