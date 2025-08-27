@@ -226,6 +226,22 @@ int main(int, char**)
     // Docking is not available on master branch by default
     ImGui::StyleColorsDark();
 
+    // Load Chinese font for UI (try a few relative paths)
+    {
+        const char* font_rel1 = "微软雅黑.ttf";
+        const char* font_rel2 = "../微软雅黑.ttf";
+        const char* font_rel3 = "../../微软雅黑.ttf";
+        ImFontConfig cfg;
+        cfg.OversampleH = 2;
+        cfg.OversampleV = 1;
+        cfg.PixelSnapH = true;
+        const ImWchar* ranges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
+        ImFont* font_cn = io.Fonts->AddFontFromFileTTF(font_rel1, 18.0f, &cfg, ranges);
+        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel2, 18.0f, &cfg, ranges);
+        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel3, 18.0f, &cfg, ranges);
+        if (font_cn) io.FontDefault = font_cn; // use as default if loaded
+    }
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
