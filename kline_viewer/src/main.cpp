@@ -67,6 +67,15 @@ struct ChartOptions {
     float  boll_thickness = 1.6f;
 };
 
+// Trade annotation for buy/sell pair
+struct TradeAnnot {
+    std::time_t buy_t{};
+    double buy_p{};
+    std::time_t sell_t{};
+    double sell_p{};
+    bool connect_line{true};
+};
+
 static void glfw_error_callback(int error, const char *description) {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
@@ -394,6 +403,9 @@ int main(int, char **) {
     bool crosshair_visible = false;
     int cross_idx = -1;
     double cross_price = 0.0;
+    // Trades state
+    std::vector<TradeAnnot> trades;
+    bool show_trades = true;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -488,13 +500,13 @@ int main(int, char **) {
         // Margin separator
         dl->AddLine(ImVec2(margin_x0, canvas_pos.y), ImVec2(margin_x0, canvas_pos.y + canvas_size.y), IM_COL32(100, 100, 100, 120));
 
-        // Main chart (clip to plot area)
+    // Main chart (clip to plot area)
         dl->PushClipRect(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), true);
         draw_grid(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), (float)y_min, (float)y_max);
         draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
-        if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
+    if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
         // HLC area (Low-Close red fill, Close-High green fill) + three lines
         if (opt.show_hlc_area) {
             ImDrawList *dlx = dl;
@@ -533,6 +545,30 @@ int main(int, char **) {
             draw_line_series(boll_up,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
             draw_line_series(boll_mid, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_mid,  opt.boll_thickness);
             draw_line_series(boll_dn,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
+        }
+        // Draw trades (markers + optional connecting line)
+        if (show_trades && !trades.empty()) {
+            auto x_from_time = [&](double t){ return main_pos.x + (float)((find_nearest_index_by_time(candles, (std::time_t)t) - vs.scroll_x) * vs.scale_x); };
+            auto y_to = [&](double y){ float ty=(float)((y - y_min)/(y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
+            for (auto &tr : trades) {
+                float bx = x_from_time((double)tr.buy_t);
+                float by = y_to(tr.buy_p);
+                float sx = x_from_time((double)tr.sell_t);
+                float sy = y_to(tr.sell_p);
+                float r = 6.0f;
+                // Buy marker: upward green triangle
+                ImVec2 b0(bx, by - r), b1(bx - r, by + r), b2(bx + r, by + r);
+                dl->AddTriangleFilled(b0, b1, b2, IM_COL32(82,196,26,220));
+                dl->AddTriangle(b0, b1, b2, IM_COL32(0,0,0,200), 1.0f);
+                // Sell marker: downward red triangle
+                ImVec2 s0(sx, sy + r), s1(sx - r, sy - r), s2(sx + r, sy - r);
+                dl->AddTriangleFilled(s0, s1, s2, IM_COL32(255,77,79,220));
+                dl->AddTriangle(s0, s1, s2, IM_COL32(0,0,0,200), 1.0f);
+                // Optional connecting line
+                if (tr.connect_line) {
+                    dl->AddLine(ImVec2(bx, by), ImVec2(sx, sy), IM_COL32(200,200,200,180), 1.5f);
+                }
+            }
         }
         dl->PopClipRect();
 
@@ -974,6 +1010,40 @@ int main(int, char **) {
         // }
 
         jump_window(candles, cross_idx, vs, main_size);
+        // Trades window: add trade by date/time and price
+        ImGui::Begin("Trades");
+        ImGui::Checkbox("Show trades", &show_trades);
+        static char bdate[16] = "2025-01-02";
+        static char btime[8]  = "09:30";
+        static float bprice   = 3200.0f;
+        static char sdate[16] = "2025-03-04";
+        static char stime[8]  = "09:30";
+        static float sprice   = 3300.0f;
+        static bool  connect  = true;
+        ImGui::InputText("Buy Date", bdate, sizeof(bdate));
+        ImGui::InputText("Buy Time", btime, sizeof(btime));
+        ImGui::InputFloat("Buy Price", &bprice, 0, 0, "%.4f");
+        ImGui::Separator();
+        ImGui::InputText("Sell Date", sdate, sizeof(sdate));
+        ImGui::InputText("Sell Time", stime, sizeof(stime));
+        ImGui::InputFloat("Sell Price", &sprice, 0, 0, "%.4f");
+        ImGui::Checkbox("Connect line", &connect);
+        if (ImGui::Button("Add Trade")) {
+            std::time_t bt{}, st{};
+            if (parse_datetime_to_time_t(bdate, btime, bt) && parse_datetime_to_time_t(sdate, stime, st)) {
+                trades.push_back(TradeAnnot{bt, (double)bprice, st, (double)sprice, connect});
+            }
+        }
+        // List trades
+        for (int i = 0; i < (int)trades.size(); ++i) {
+            ImGui::PushID(i);
+            ImGui::Text("%d.", i+1);
+            ImGui::SameLine(); ImGui::Text("B: %.4f S: %.4f", trades[i].buy_p, trades[i].sell_p);
+            ImGui::SameLine();
+            if (ImGui::Button("Remove")) { trades.erase(trades.begin()+i); ImGui::PopID(); break; }
+            ImGui::PopID();
+        }
+        ImGui::End();
 
         // Separate Legend window
         ImGui::Begin("Legend");
