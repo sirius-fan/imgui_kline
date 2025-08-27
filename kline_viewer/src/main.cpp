@@ -27,6 +27,7 @@ struct ChartOptions {
     bool show_ema50 = true;
     bool show_macd = true;
     bool show_rsi = true;
+    bool show_volume = true;
 };
 
 static void glfw_error_callback(int error, const char* description)
@@ -152,11 +153,18 @@ int main(int, char**)
     std::vector<double> closes; closes.reserve(candles.size());
     for (auto& c: candles) closes.push_back(c.close);
 
-    std::vector<double> sma20 = ind::sma(closes, 20);
-    std::vector<double> ema50 = ind::ema(closes, 50);
+    // Indicator params (customizable)
+    int sma_period = 20;
+    int ema_period = 50;
+    int macd_fast = 12, macd_slow = 26, macd_signal = 9;
+    int rsi_period = 14;
+
+    // Indicator series
+    std::vector<double> sma_v = ind::sma(closes, sma_period);
+    std::vector<double> ema_v = ind::ema(closes, ema_period);
     std::vector<double> macd_line, signal_line, hist;
-    ind::macd(closes, 12, 26, 9, &macd_line, &signal_line, &hist);
-    std::vector<double> rsi14; ind::rsi(closes, 14, rsi14);
+    ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
+    std::vector<double> rsi_v; ind::rsi(closes, rsi_period, rsi_v);
 
     ViewState vs;
     ChartOptions opt;
@@ -181,17 +189,22 @@ int main(int, char**)
 
     // Layout: main, optional RSI, optional MACD stacked vertically
     const float spacing = 6.0f;
-    const float rsi_h = opt.show_rsi ? 80.0f : 0.0f;
-    const float macd_h = opt.show_macd ? 120.0f : 0.0f;
-    float main_h = canvas_size.y - (opt.show_rsi ? (rsi_h + spacing) : 0.0f)
-                      - (opt.show_macd ? (macd_h + spacing) : 0.0f);
+    const float vol_h  = opt.show_volume ? 80.0f  : 0.0f;
+    const float rsi_h  = opt.show_rsi    ? 80.0f  : 0.0f;
+    const float macd_h = opt.show_macd   ? 120.0f : 0.0f;
+    int gaps = 0; if (opt.show_volume) gaps++; if (opt.show_rsi) gaps++; if (opt.show_macd) gaps++;
+    float main_h = canvas_size.y - vol_h - rsi_h - macd_h - spacing * gaps;
     if (main_h < 120.0f) main_h = 120.0f;
     ImVec2 main_pos = canvas_pos;
     ImVec2 main_size = ImVec2(canvas_size.x, main_h);
-    ImVec2 rsi_pos = ImVec2(main_pos.x, main_pos.y + main_size.y + spacing);
+    ImVec2 vol_pos = ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_volume ? spacing : 0.0f));
+    ImVec2 vol_size = ImVec2(canvas_size.x, vol_h);
+    ImVec2 rsi_pos = opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_rsi ? spacing : 0.0f))
+                     : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_rsi ? spacing : 0.0f));
     ImVec2 rsi_size = ImVec2(canvas_size.x, rsi_h);
-    ImVec2 macd_pos = opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + spacing)
-                       : ImVec2(main_pos.x, main_pos.y + main_size.y + spacing);
+    ImVec2 macd_pos = (opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + (opt.show_macd ? spacing : 0.0f))
+                    : (opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_macd ? spacing : 0.0f))
+                               : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_macd ? spacing : 0.0f))));
     ImVec2 macd_size = ImVec2(canvas_size.x, macd_h);
 
         // Interaction: mouse wheel zoom/scroll
@@ -238,16 +251,33 @@ int main(int, char**)
 
     // Draw backgrounds and borders per panel
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    auto rect = [&](ImVec2 p, ImVec2 s){ dl->AddRectFilled(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(20,20,20,255)); dl->AddRect(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(100,100,100,255)); };
+    auto rect = [&](ImVec2 p, ImVec2 s){ dl->AddRectFilled(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(20,20,20,255)); dl->AddRect(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(100,100,100,120)); };
     rect(main_pos, main_size);
+    if (opt.show_volume) rect(vol_pos,  vol_size);
     if (opt.show_rsi)  dl->AddRect(rsi_pos,  ImVec2(rsi_pos.x+rsi_size.x,   rsi_pos.y+rsi_size.y),   IM_COL32(100,100,100,150));
     if (opt.show_macd) dl->AddRect(macd_pos, ImVec2(macd_pos.x+macd_size.x, macd_pos.y+macd_size.y), IM_COL32(100,100,100,150));
 
     // Main chart
     draw_grid(main_pos, ImVec2(main_pos.x+main_size.x, main_pos.y+main_size.y), (float)y_min, (float)y_max);
     draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
-    if (opt.show_sma20) draw_line_series(sma20, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
-    if (opt.show_ema50) draw_line_series(ema50, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
+        if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
+        if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
+
+        // Volume bars
+        if (opt.show_volume) {
+            double vmax = 0.0; for (int i=begin;i<end;++i) vmax = std::max(vmax, candles[i].volume);
+            auto vy = [&](double v){ float t=(float)(v / (vmax + 1e-9)); return vol_pos.y + (1.0f - t) * vol_size.y; };
+            float base_y = vol_pos.y + vol_size.y - 1.0f;
+            for (int i=begin;i<end;++i) {
+                const auto& c = candles[i];
+                float x = vol_pos.x + (i - vs.scroll_x) * vs.scale_x;
+                float w = std::max(1.0f, vs.scale_x * 0.6f);
+                float x0 = x - w*0.5f, x1 = x + w*0.5f;
+                float y1 = vy(c.volume);
+                ImU32 col = (c.close >= c.open) ? IM_COL32(82,196,26,180) : IM_COL32(255,77,79,180);
+                dl->AddRectFilled(ImVec2(x0, base_y), ImVec2(x1, y1), col);
+            }
+        }
 
         // MACD panel
         if (opt.show_macd) {
@@ -288,10 +318,10 @@ int main(int, char**)
             dl->AddLine(ImVec2(rsi_pos.x, rsi_y(70)), ImVec2(rsi_pos.x+rsi_size.x, rsi_y(70)), IM_COL32(150,150,150,180));
             // RSI line
             ImVec2 prev; bool has_prev=false;
-            for (int i=begin;i<end;++i){ double v=rsi14[i]; if (std::isnan(v)) {has_prev=false; continue;} float x=rsi_pos.x + (i - vs.scroll_x)*vs.scale_x; float y=rsi_y(v); ImVec2 cur(x,y); if(has_prev) dl->AddLine(prev, cur, IM_COL32(64,158,255,255), 1.5f); prev=cur; has_prev=true; }
+            for (int i=begin;i<end;++i){ double v=rsi_v[i]; if (std::isnan(v)) {has_prev=false; continue;} float x=rsi_pos.x + (i - vs.scroll_x)*vs.scale_x; float y=rsi_y(v); ImVec2 cur(x,y); if(has_prev) dl->AddLine(prev, cur, IM_COL32(64,158,255,255), 1.5f); prev=cur; has_prev=true; }
         }
 
-        // Crosshair on main panel and data readout
+    // Crosshair on panels and data readout
         auto format_opt = [](double v, char* buf, size_t n){ if (std::isnan(v)) { snprintf(buf,n,"-"); } else { snprintf(buf,n,"%.4f", v); } };
         if (crosshair_visible) {
             ImVec2 mp = io.MousePos;
@@ -309,23 +339,26 @@ int main(int, char**)
             float cy_main = main_pos.y + (float)((y_max - cross_price) / (y_max - y_min)) * main_size.y;
             dl->AddLine(ImVec2(cx, main_pos.y), ImVec2(cx, main_pos.y + main_size.y), IM_COL32(200,200,200,120));
             dl->AddLine(ImVec2(main_pos.x, cy_main), ImVec2(main_pos.x + main_size.x, cy_main), IM_COL32(200,200,200,120));
-            if (opt.show_rsi)  dl->AddLine(ImVec2(cx, rsi_pos.y),  ImVec2(cx, rsi_pos.y  + rsi_size.y),  IM_COL32(200,200,200,60));
+            if (opt.show_volume) dl->AddLine(ImVec2(cx, vol_pos.y),  ImVec2(cx, vol_pos.y  + vol_size.y),  IM_COL32(200,200,200,60));
+            if (opt.show_rsi)    dl->AddLine(ImVec2(cx, rsi_pos.y),  ImVec2(cx, rsi_pos.y  + rsi_size.y),  IM_COL32(200,200,200,60));
             if (opt.show_macd) dl->AddLine(ImVec2(cx, macd_pos.y), ImVec2(cx, macd_pos.y + macd_size.y), IM_COL32(200,200,200,60));
 
             // Data box
             const Candle& c = candles[cross_idx];
             char buf1[256];
             char sv[32], ev[32], mv[32], sg[32], hs[32], rs[32];
-            format_opt(sma20[cross_idx], sv, sizeof(sv));
-            format_opt(ema50[cross_idx], ev, sizeof(ev));
+            format_opt(sma_v[cross_idx], sv, sizeof(sv));
+            format_opt(ema_v[cross_idx], ev, sizeof(ev));
             format_opt(macd_line[cross_idx], mv, sizeof(mv));
             format_opt(signal_line[cross_idx], sg, sizeof(sg));
             format_opt(hist[cross_idx], hs, sizeof(hs));
-            format_opt(rsi14[cross_idx], rs, sizeof(rs));
+            format_opt(rsi_v[cross_idx], rs, sizeof(rs));
             snprintf(buf1, sizeof(buf1),
-                     "Idx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f\nSMA20: %s  EMA50: %s\nMACD: %s  Signal: %s  Hist: %s\nRSI14: %s",
-                     cross_idx, c.open, c.high, c.low, c.close,
-                     sv, ev, mv, sg, hs, rs);
+                     "Idx: %d\nO: %.4f  H: %.4f  L: %.4f  C: %.4f  V: %.2f\nSMA(%d): %s  EMA(%d): %s\nMACD(%d,%d,%d): %s  Sig: %s  Hist: %s\nRSI(%d): %s",
+                     cross_idx, c.open, c.high, c.low, c.close, c.volume,
+                     sma_period, sv, ema_period, ev,
+                     macd_fast, macd_slow, macd_signal, mv, sg, hs,
+                     rsi_period, rs);
             ImVec2 box_pos = ImVec2(main_pos.x + 8, main_pos.y + 8);
             ImGui::SetCursorScreenPos(box_pos);
             ImGui::BeginChild("DataBox", ImVec2(320, ImGui::GetTextLineHeightWithSpacing()*5.5f), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
@@ -333,9 +366,28 @@ int main(int, char**)
             ImGui::EndChild();
         }
 
+        // Time axis at the very bottom panel (whichever is last visible)
+        ImVec2 axis_pos = main_pos; ImVec2 axis_size = main_size;
+        if (opt.show_volume) { axis_pos = vol_pos; axis_size = vol_size; }
+        if (opt.show_rsi)    { axis_pos = rsi_pos; axis_size = rsi_size; }
+        if (opt.show_macd)   { axis_pos = macd_pos; axis_size = macd_size; }
+        float axis_y = axis_pos.y + axis_size.y;
+        dl->AddLine(ImVec2(axis_pos.x, axis_y), ImVec2(axis_pos.x + axis_size.x, axis_y), IM_COL32(120,120,120,160));
+        int px_step = 80; // min pixel between ticks
+        int step = std::max(1, (int)std::round(px_step / std::max(1.0f, vs.scale_x)));
+        int first = std::max(0, ((int)std::floor(vs.scroll_x) / step) * step);
+        for (int i = first; i < (int)candles.size(); i += step) {
+            float x = axis_pos.x + (i - vs.scroll_x) * vs.scale_x;
+            if (x < axis_pos.x || x > axis_pos.x + axis_size.x) continue;
+            dl->AddLine(ImVec2(x, axis_y), ImVec2(x, axis_y - 6.0f), IM_COL32(150,150,150,160));
+            char label[32]; snprintf(label, sizeof(label), "%d", i);
+            ImVec2 sz = ImGui::CalcTextSize(label);
+            dl->AddText(ImVec2(x - sz.x*0.5f, axis_y - sz.y - 8.0f), IM_COL32(180,180,180,220), label);
+        }
+
         // UI controls
         ImGui::SetCursorScreenPos(ImVec2(canvas_pos.x+8, canvas_pos.y+8));
-    ImGui::BeginChild("Legend", ImVec2(260,160), ImGuiChildFlags_Border);
+        ImGui::BeginChild("Legend", ImVec2(280,260), ImGuiChildFlags_Border);
         ImGui::Text("K-Line Viewer");
         ImGui::Text("Candles: %zu", candles.size());
         ImGui::SliderFloat("Scale X", &vs.scale_x, 1.5f, 30.0f);
@@ -346,8 +398,30 @@ int main(int, char**)
     ImGui::Checkbox("EMA50", &opt.show_ema50);
     ImGui::Checkbox("MACD", &opt.show_macd);
     ImGui::Checkbox("RSI", &opt.show_rsi);
+        ImGui::Checkbox("Volume", &opt.show_volume);
     ImGui::Separator();
     ImGui::Text("Crosshair: %s (L-Click to toggle)", crosshair_visible ? "ON" : "OFF");
+
+        // Parameters panel
+        ImGui::Separator();
+        ImGui::Text("Parameters");
+        bool dirty = false;
+        dirty |= ImGui::SliderInt("SMA period", &sma_period, 2, 200);
+        dirty |= ImGui::SliderInt("EMA period", &ema_period, 2, 200);
+        dirty |= ImGui::SliderInt("MACD fast", &macd_fast, 2, 100);
+        dirty |= ImGui::SliderInt("MACD slow", &macd_slow, 3, 200);
+        dirty |= ImGui::SliderInt("MACD signal", &macd_signal, 2, 100);
+        dirty |= ImGui::SliderInt("RSI period", &rsi_period, 2, 200);
+        if (dirty) {
+            sma_period = std::min(sma_period, (int)closes.size());
+            ema_period = std::min(ema_period, (int)closes.size());
+            macd_fast = std::max(2, macd_fast); macd_slow = std::max(macd_fast+1, macd_slow); macd_signal = std::max(2, macd_signal);
+            rsi_period = std::min(std::max(2, rsi_period), (int)closes.size());
+            sma_v = ind::sma(closes, sma_period);
+            ema_v = ind::ema(closes, ema_period);
+            ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
+            ind::rsi(closes, rsi_period, rsi_v);
+        }
         ImGui::EndChild();
 
         ImGui::End();
