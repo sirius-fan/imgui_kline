@@ -13,6 +13,7 @@
 #include <sstream>
 #include <ctime>
 #include <cstring>
+#include <limits>
 
 #include <GLFW/glfw3.h>
 
@@ -57,7 +58,8 @@ struct ChartOptions {
     bool show_rsi = true;
     bool show_volume = true;
     bool labels_follow_cursor = false; // when true, right-side floating labels follow crosshair index
-    bool show_close_line = false; // show close price as a line on main chart
+    bool show_close_line = false;      // show close price as a line on main chart
+    bool show_boll = false;            // show Bollinger Bands
 };
 
 static void glfw_error_callback(int error, const char *description) {
@@ -220,6 +222,33 @@ static void draw_line_series(const std::vector<double> &series, const ViewState 
     }
 }
 
+// Compute Bollinger Bands (mid = SMA(period), upper/lower = mid ± k * stddev)
+static void compute_boll(const std::vector<double>& series, int period, double k,
+                         std::vector<double>& mid, std::vector<double>& upper, std::vector<double>& lower)
+{
+    size_t n = series.size();
+    double NaN = std::numeric_limits<double>::quiet_NaN();
+    mid.assign(n, NaN);
+    upper.assign(n, NaN);
+    lower.assign(n, NaN);
+    if (period <= 1 || (size_t)period > n) return;
+    for (size_t i = period - 1; i < n; ++i) {
+        double sum = 0.0;
+        for (int j = 0; j < period; ++j) sum += series[i - j];
+        double mean = sum / (double)period;
+        double var = 0.0;
+        for (int j = 0; j < period; ++j) {
+            double d = series[i - j] - mean;
+            var += d * d;
+        }
+        var /= (double)period; // population variance
+        double sd = std::sqrt(var);
+        mid[i] = mean;
+        upper[i] = mean + k * sd;
+        lower[i] = mean - k * sd;
+    }
+}
+
 void jump_window(const std::vector<Candle> &candles, int cross_idx, ViewState &vs, const ImVec2 &main_size) {
     // Jump window: jump to date/time or to oldest/newest
     ImGui::Begin("Jump");
@@ -335,6 +364,8 @@ int main(int, char **) {
     int ema_period = 50;
     int macd_fast = 12, macd_slow = 26, macd_signal = 9;
     int rsi_period = 14;
+    int boll_period = 20; // Bollinger period
+    float boll_k = 2.0f;  // Bollinger multiplier
 
     // Indicator series
     std::vector<double> sma_v = ind::sma(closes, sma_period);
@@ -343,6 +374,10 @@ int main(int, char **) {
     ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
     std::vector<double> rsi_v;
     ind::rsi(closes, rsi_period, rsi_v);
+
+    // Bollinger Bands series
+    std::vector<double> boll_mid, boll_up, boll_dn;
+    compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
 
     ViewState vs;
     ChartOptions opt;
@@ -446,10 +481,17 @@ int main(int, char **) {
         // Main chart (clip to plot area)
         dl->PushClipRect(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), true);
         draw_grid(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), (float)y_min, (float)y_max);
-    draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
+        draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
     if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
+        if (opt.show_boll) {
+            ImU32 col_mid = IM_COL32(197, 90, 240, 220);
+            ImU32 col_band = IM_COL32(197, 90, 240, 140);
+            draw_line_series(boll_up,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band);
+            draw_line_series(boll_mid, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_mid);
+            draw_line_series(boll_dn,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band);
+        }
         dl->PopClipRect();
 
         // Price scale labels in the right margin for the main chart
@@ -881,7 +923,8 @@ int main(int, char **) {
         ImGui::Checkbox("MACD", &opt.show_macd);
         ImGui::Checkbox("RSI", &opt.show_rsi);
         ImGui::Checkbox("Volume", &opt.show_volume);
-    ImGui::Checkbox("Close line", &opt.show_close_line);
+        ImGui::Checkbox("Close line", &opt.show_close_line);
+    ImGui::Checkbox("BOLL", &opt.show_boll);
         ImGui::Separator();
         ImGui::Text("Labels");
         ImGui::Checkbox("右侧浮标跟随光标索引", &opt.labels_follow_cursor);
@@ -896,6 +939,8 @@ int main(int, char **) {
         dirty |= ImGui::SliderInt("MACD slow", &macd_slow, 3, 200);
         dirty |= ImGui::SliderInt("MACD signal", &macd_signal, 2, 100);
         dirty |= ImGui::SliderInt("RSI period", &rsi_period, 2, 200);
+        dirty |= ImGui::SliderInt("BOLL period", &boll_period, 2, 300);
+        dirty |= ImGui::SliderFloat("BOLL k", &boll_k, 0.5f, 4.0f, "%.2f");
         if (dirty) {
             sma_period = std::min(sma_period, (int)closes.size());
             ema_period = std::min(ema_period, (int)closes.size());
@@ -903,10 +948,12 @@ int main(int, char **) {
             macd_slow = std::max(macd_fast + 1, macd_slow);
             macd_signal = std::max(2, macd_signal);
             rsi_period = std::min(std::max(2, rsi_period), (int)closes.size());
+            boll_period = std::min(std::max(2, boll_period), (int)closes.size());
             sma_v = ind::sma(closes, sma_period);
             ema_v = ind::ema(closes, ema_period);
             ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
             ind::rsi(closes, rsi_period, rsi_v);
+            compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
         }
         ImGui::Separator();
         ImGui::Text("Load CSV");
@@ -926,6 +973,7 @@ int main(int, char **) {
                 ema_v = ind::ema(closes, ema_period);
                 ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
                 ind::rsi(closes, rsi_period, rsi_v);
+                compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
             }
         }
 
