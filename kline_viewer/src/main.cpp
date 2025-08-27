@@ -257,7 +257,7 @@ int main(int, char**)
     if (canvas_size.y < 200) canvas_size.y = 200; // need room for subplots
 
     // Reserve a right-side margin for floating labels so they don't overlap the plots
-    const float right_margin = 110.0f; // px
+    static float right_margin = 110.0f; // px, adjustable in Legend
     float plot_width = std::max(10.0f, canvas_size.x - right_margin);
     float margin_x0 = canvas_pos.x + plot_width;
     float margin_x1 = canvas_pos.x + canvas_size.x;
@@ -334,14 +334,17 @@ int main(int, char**)
     // Margin separator
     dl->AddLine(ImVec2(margin_x0, canvas_pos.y), ImVec2(margin_x0, canvas_pos.y + canvas_size.y), IM_COL32(100,100,100,120));
 
-    // Main chart
+    // Main chart (clip to plot area)
+    dl->PushClipRect(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), true);
     draw_grid(main_pos, ImVec2(main_pos.x+main_size.x, main_pos.y+main_size.y), (float)y_min, (float)y_max);
     draw_candles(candles, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max);
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
+    dl->PopClipRect();
 
         // Volume bars
         if (opt.show_volume) {
+            dl->PushClipRect(vol_pos, ImVec2(vol_pos.x + vol_size.x, vol_pos.y + vol_size.y), true);
             double vmax = 0.0; for (int i=begin;i<end;++i) vmax = std::max(vmax, candles[i].volume);
             auto vy = [&](double v){ float t=(float)(v / (vmax + 1e-9)); return vol_pos.y + (1.0f - t) * vol_size.y; };
             float base_y = vol_pos.y + vol_size.y - 1.0f;
@@ -354,10 +357,12 @@ int main(int, char**)
                 ImU32 col = (c.close >= c.open) ? IM_COL32(82,196,26,180) : IM_COL32(255,77,79,180);
                 dl->AddRectFilled(ImVec2(x0, base_y), ImVec2(x1, y1), col);
             }
+            dl->PopClipRect();
         }
 
         // MACD panel
         if (opt.show_macd) {
+            dl->PushClipRect(macd_pos, ImVec2(macd_pos.x + macd_size.x, macd_pos.y + macd_size.y), true);
             // Scale MACD
             double mmin=1e9, mmax=-1e9; for (int i=begin;i<end;++i){ mmin=std::min({mmin, macd_line[i], signal_line[i], hist[i]}); mmax=std::max({mmax, macd_line[i], signal_line[i], hist[i]}); }
             mmin = std::min(mmin, 0.0); mmax = std::max(mmax, 0.0);
@@ -385,10 +390,12 @@ int main(int, char**)
             };
             draw_line_local(macd_line, IM_COL32(255,255,255,220));
             draw_line_local(signal_line, IM_COL32(255,215,0,220));
+            dl->PopClipRect();
         }
 
         // RSI panel
         if (opt.show_rsi) {
+            dl->PushClipRect(rsi_pos, ImVec2(rsi_pos.x + rsi_size.x, rsi_pos.y + rsi_size.y), true);
             auto rsi_y = [&](double v){ return rsi_pos.y + (float)( (100.0 - v) / 100.0 ) * rsi_size.y; };
             // 30/70 bands
             dl->AddLine(ImVec2(rsi_pos.x, rsi_y(30)), ImVec2(rsi_pos.x+rsi_size.x, rsi_y(30)), IM_COL32(150,150,150,180));
@@ -396,6 +403,7 @@ int main(int, char**)
             // RSI line
             ImVec2 prev; bool has_prev=false;
             for (int i=begin;i<end;++i){ double v=rsi_v[i]; if (std::isnan(v)) {has_prev=false; continue;} float x=rsi_pos.x + (i - vs.scroll_x)*vs.scale_x; float y=rsi_y(v); ImVec2 cur(x,y); if(has_prev) dl->AddLine(prev, cur, IM_COL32(64,158,255,255), 1.5f); prev=cur; has_prev=true; }
+            dl->PopClipRect();
         }
 
     // Crosshair on panels and data readout
@@ -471,7 +479,14 @@ int main(int, char**)
 
         // Right-side floating labels in the reserved margin for each panel (doesn't overlap plots)
         {
-            int last = std::max(begin, end - 1);
+            // Compute the last truly visible candle by x-bound, so clipped candles are excluded
+            int last = 0;
+            if (!candles.empty()) {
+                float candle_w = std::max(1.0f, vs.scale_x * 0.7f);
+                float right_px = std::max(0.0f, main_size.x - candle_w * 0.5f);
+                int last_by_x = (int)std::floor(vs.scroll_x + right_px / std::max(1.0f, vs.scale_x));
+                last = std::clamp(last_by_x, begin, std::max(begin, end - 1));
+            }
             if (last >= begin && last < end) {
                 struct Label { float y; ImU32 col; bool filled; std::string text; };
                 auto draw_labels = [&](const std::vector<Label>& in, ImVec2 panel_pos, ImVec2 panel_size){
@@ -553,7 +568,8 @@ int main(int, char**)
         ImGui::Text("K-Line Viewer");
         ImGui::Text("Candles: %zu", candles.size());
         ImGui::Text("Data: %s", active_csv.c_str());
-        ImGui::SliderFloat("Scale X", &vs.scale_x, 1.5f, 30.0f);
+    ImGui::SliderFloat("Scale X", &vs.scale_x, 1.5f, 30.0f);
+    ImGui::SliderFloat("Right margin", &right_margin, 60.0f, 240.0f, "%.0f px");
         ImGui::Text("Scroll: %.1f", vs.scroll_x);
         ImGui::Separator();
         ImGui::Text("Indicators");
