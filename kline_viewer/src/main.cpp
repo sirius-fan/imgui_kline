@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 #include <GLFW/glfw3.h>
 
@@ -51,6 +55,60 @@ static std::vector<Candle> gen_sample_data(size_t n = 600) {
         v.push_back({t0 + (double)i, open, high, low, close, volume});
     }
     return v;
+}
+
+static inline bool parse_datetime_to_time_t(const std::string& date, const std::string& time, std::time_t& out)
+{
+    // date: YYYY-MM-DD, time: HH:MM (24h)
+    int Y=0,M=0,D=0,h=0,m=0;
+    if (sscanf(date.c_str(), "%d-%d-%d", &Y, &M, &D) != 3) return false;
+    if (sscanf(time.c_str(), "%d:%d", &h, &m) != 2) { h = 0; m = 0; }
+    std::tm tm{};
+    tm.tm_year = Y - 1900;
+    tm.tm_mon = M - 1;
+    tm.tm_mday = D;
+    tm.tm_hour = h;
+    tm.tm_min = m;
+    tm.tm_sec = 0;
+    // Use local time; for pure ordering this is fine
+    out = std::mktime(&tm);
+    return out != (std::time_t)-1;
+}
+
+static bool load_csv_sh_index(const std::string& path, std::vector<Candle>& out)
+{
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) return false;
+    std::string line;
+    // Skip header
+    if (!std::getline(ifs, line)) return false;
+    out.clear();
+    out.reserve(4096);
+    while (std::getline(ifs, line)) {
+        if (line.empty()) continue;
+        std::vector<std::string> cols; cols.reserve(12);
+        std::string cur; cur.reserve(32);
+        std::istringstream ss(line);
+        while (std::getline(ss, cur, ',')) cols.push_back(cur);
+        if (cols.size() < 10) continue; // 日期,时间,开盘,最高,最低,收盘,成交量,成交额,涨跌价,涨跌幅
+        std::time_t tt{}; if (!parse_datetime_to_time_t(cols[0], cols[1], tt)) continue;
+        auto to_d = [](const std::string& s){ if (s.empty()) return 0.0; try { return std::stod(s); } catch(...) { return 0.0; } };
+        double open = to_d(cols[2]);
+        double high = to_d(cols[3]);
+        double low  = to_d(cols[4]);
+        double close= to_d(cols[5]);
+        double vol  = to_d(cols[6]);
+        out.push_back({ (double)tt, open, high, low, close, vol });
+    }
+    return !out.empty();
+}
+
+static inline void format_time_label(double t, char* buf, size_t n, bool with_time=false)
+{
+    std::time_t tt = (std::time_t)t; std::tm* lt = std::localtime(&tt);
+    if (!lt) { snprintf(buf, n, "-"); return; }
+    if (with_time) std::strftime(buf, n, "%Y-%m-%d %H:%M", lt);
+    else std::strftime(buf, n, "%Y-%m-%d", lt);
 }
 
 static void draw_grid(const ImVec2& p0, const ImVec2& p1, float y_min, float y_max) {
@@ -149,7 +207,19 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     // Data
-    std::vector<Candle> candles = gen_sample_data(800);
+    std::vector<Candle> candles;
+    // Try to load from CSV (several relative paths tried), fallback to synthetic
+    const char* csv_rel1 = "test_data/sh000001(上证指数).csv";
+    const char* csv_rel2 = "../test_data/sh000001(上证指数).csv";
+    const char* csv_rel3 = "../../test_data/sh000001(上证指数).csv";
+    std::string active_csv;
+    if (load_csv_sh_index(csv_rel1, candles)) active_csv = csv_rel1;
+    else if (load_csv_sh_index(csv_rel2, candles)) active_csv = csv_rel2;
+    else if (load_csv_sh_index(csv_rel3, candles)) active_csv = csv_rel3;
+    else {
+        candles = gen_sample_data(800);
+        active_csv = "<synthetic>";
+    }
     std::vector<double> closes; closes.reserve(candles.size());
     for (auto& c: candles) closes.push_back(c.close);
 
@@ -380,16 +450,17 @@ int main(int, char**)
             float x = axis_pos.x + (i - vs.scroll_x) * vs.scale_x;
             if (x < axis_pos.x || x > axis_pos.x + axis_size.x) continue;
             dl->AddLine(ImVec2(x, axis_y), ImVec2(x, axis_y - 6.0f), IM_COL32(150,150,150,160));
-            char label[32]; snprintf(label, sizeof(label), "%d", i);
+            char label[32]; format_time_label(candles[i].time, label, sizeof(label), false);
             ImVec2 sz = ImGui::CalcTextSize(label);
             dl->AddText(ImVec2(x - sz.x*0.5f, axis_y - sz.y - 8.0f), IM_COL32(180,180,180,220), label);
         }
 
         // UI controls
         ImGui::SetCursorScreenPos(ImVec2(canvas_pos.x+8, canvas_pos.y+8));
-        ImGui::BeginChild("Legend", ImVec2(280,260), ImGuiChildFlags_Border);
+    ImGui::BeginChild("Legend", ImVec2(320,300), ImGuiChildFlags_Border);
         ImGui::Text("K-Line Viewer");
-        ImGui::Text("Candles: %zu", candles.size());
+    ImGui::Text("Candles: %zu", candles.size());
+    ImGui::Text("Data: %s", active_csv.c_str());
         ImGui::SliderFloat("Scale X", &vs.scale_x, 1.5f, 30.0f);
         ImGui::Text("Scroll: %.1f", vs.scroll_x);
     ImGui::Separator();
@@ -421,6 +492,31 @@ int main(int, char**)
             ema_v = ind::ema(closes, ema_period);
             ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
             ind::rsi(closes, rsi_period, rsi_v);
+        }
+        // File loader UI
+        static char file_buf[512] = "";
+        if (file_buf[0] == '\0') {
+            std::snprintf(file_buf, sizeof(file_buf), "%s", active_csv.c_str());
+        }
+        ImGui::Separator();
+        ImGui::Text("Load CSV");
+        ImGui::InputText("##csvpath", file_buf, sizeof(file_buf));
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            std::vector<Candle> tmp;
+            if (load_csv_sh_index(file_buf, tmp)) {
+                candles.swap(tmp);
+                active_csv = file_buf;
+                // rebuild closes & indicators
+                closes.clear(); closes.reserve(candles.size());
+                for (auto& c: candles) closes.push_back(c.close);
+                sma_v = ind::sma(closes, sma_period);
+                ema_v = ind::ema(closes, ema_period);
+                ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
+                ind::rsi(closes, rsi_period, rsi_v);
+                // adjust scroll to end
+                vs.scroll_x = std::max(0.0f, (float)candles.size() - (ImGui::GetContentRegionAvail().x / vs.scale_x));
+            }
         }
         ImGui::EndChild();
 
