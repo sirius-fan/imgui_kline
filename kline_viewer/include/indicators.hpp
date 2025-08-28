@@ -79,4 +79,40 @@ inline void rsi(const std::vector<double>& data, int period, std::vector<double>
     }
 }
 
+// KDJ indicator (RSV period n, smoothing 1/3 for K and D)
+inline void kdj(const std::vector<double>& close,
+                const std::vector<double>& high,
+                const std::vector<double>& low,
+                int period,
+                std::vector<double>& K,
+                std::vector<double>& D,
+                std::vector<double>& J) {
+    size_t n = close.size();
+    K.assign(n, NAN);
+    D.assign(n, NAN);
+    J.assign(n, NAN);
+    if (period <= 0 || high.size() != n || low.size() != n || n == 0) return;
+    double k_prev = 50.0, d_prev = 50.0; // common initialization
+    for (size_t i = 0; i < n; ++i) {
+        if (i + 1 < (size_t)period) {
+            // not enough lookback yet, keep prev smoothed values
+            K[i] = k_prev; D[i] = d_prev; J[i] = 3.0 * K[i] - 2.0 * D[i];
+            continue;
+        }
+        size_t start = i + 1 - (size_t)period;
+        double hh = high[start];
+        double ll = low[start];
+        for (size_t j = start + 1; j <= i; ++j) { hh = std::max(hh, high[j]); ll = std::min(ll, low[j]); }
+        double rsv = 0.0;
+        double denom = (hh - ll);
+        if (denom == 0) rsv = 0.0;
+        else rsv = (close[i] - ll) / denom * 100.0;
+        double k = (2.0/3.0) * k_prev + (1.0/3.0) * rsv;
+        double d = (2.0/3.0) * d_prev + (1.0/3.0) * k;
+        double j = 3.0 * k - 2.0 * d;
+        K[i] = k; D[i] = d; J[i] = j;
+        k_prev = k; d_prev = d;
+    }
+}
+
 } // namespace ind

@@ -63,6 +63,7 @@ struct ChartOptions {
     bool show_close_line = false;      // show close price as a line on main chart
     bool show_boll = false;            // show Bollinger Bands
     bool show_hlc_area = false;        // show HLC area (High/Close/Low with fills)
+    bool show_kdj = false;             // show KDJ subpanel
     // BOLL styles
     ImVec4 boll_mid_color = ImVec4(0.77f, 0.35f, 0.94f, 0.86f); // ~ IM_COL32(197,90,240,220)
     ImVec4 boll_band_color = ImVec4(0.77f, 0.35f, 0.94f, 0.55f); // ~ IM_COL32(197,90,240,140)
@@ -529,6 +530,7 @@ int main(int, char **) {
     int ema_period = 50;
     int macd_fast = 12, macd_slow = 26, macd_signal = 9;
     int rsi_period = 14;
+    int kdj_period = 9;
     int boll_period = 20; // Bollinger period
     float boll_k = 2.0f;  // Bollinger multiplier
 
@@ -538,7 +540,10 @@ int main(int, char **) {
     std::vector<double> macd_line, signal_line, hist;
     ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
     std::vector<double> rsi_v;
+    // KDJ series
+    std::vector<double> k_vals, d_vals, j_vals;
     ind::rsi(closes, rsi_period, rsi_v);
+    ind::kdj(closes, highs, lows, kdj_period, k_vals, d_vals, j_vals);
 
     // Bollinger Bands series
     std::vector<double> boll_mid, boll_up, boll_dn;
@@ -611,20 +616,24 @@ int main(int, char **) {
     const float axis_h = 28.0f; // dedicated bottom time axis height
         const float vol_h = opt.show_volume ? 80.0f : 0.0f;
         const float rsi_h = opt.show_rsi ? 80.0f : 0.0f;
+        const float kdj_h = opt.show_kdj ? 80.0f : 0.0f;
         const float macd_h = opt.show_macd ? 120.0f : 0.0f;
     int gaps = 0;
         if (opt.show_volume) gaps++;
         if (opt.show_rsi) gaps++;
+            if (opt.show_kdj) gaps++;
         if (opt.show_macd) gaps++;
     // add one extra gap above the time axis strip
-    float main_h = canvas_size.y - axis_h - vol_h - rsi_h - macd_h - spacing * (gaps + 1);
+    float main_h = canvas_size.y - axis_h - vol_h - rsi_h - kdj_h - macd_h - spacing * (gaps + 1);
         if (main_h < 120.0f) main_h = 120.0f;
         ImVec2 main_pos = canvas_pos;
         ImVec2 main_size = ImVec2(plot_width, main_h);
         ImVec2 vol_pos = ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_volume ? spacing : 0.0f));
         ImVec2 vol_size = ImVec2(plot_width, vol_h);
         ImVec2 rsi_pos = opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_rsi ? spacing : 0.0f)) : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_rsi ? spacing : 0.0f));
-        ImVec2 rsi_size = ImVec2(plot_width, rsi_h);
+    ImVec2 rsi_size = ImVec2(plot_width, rsi_h);
+    ImVec2 kdj_pos = (opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + (opt.show_kdj ? spacing : 0.0f)) : (opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_kdj ? spacing : 0.0f)) : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_kdj ? spacing : 0.0f))));
+    ImVec2 kdj_size = ImVec2(plot_width, kdj_h);
         ImVec2 macd_pos = (opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + (opt.show_macd ? spacing : 0.0f)) : (opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_macd ? spacing : 0.0f)) : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_macd ? spacing : 0.0f))));
         ImVec2 macd_size = ImVec2(plot_width, macd_h);
     // Bottom time axis strip position/size (fixed height)
@@ -680,8 +689,36 @@ int main(int, char **) {
         auto rect = [&](ImVec2 p, ImVec2 s) { dl->AddRectFilled(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(20,20,20,255)); dl->AddRect(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(100,100,100,120)); };
         rect(main_pos, main_size);
         if (opt.show_volume) rect(vol_pos, vol_size);
+    if (opt.show_volume) rect(vol_pos, vol_size);
     if (opt.show_rsi) dl->AddRect(rsi_pos, ImVec2(rsi_pos.x + rsi_size.x, rsi_pos.y + rsi_size.y), IM_COL32(100, 100, 100, 150));
+    if (opt.show_kdj) dl->AddRect(kdj_pos, ImVec2(kdj_pos.x + kdj_size.x, kdj_pos.y + kdj_size.y), IM_COL32(100, 100, 100, 150));
     if (opt.show_macd) dl->AddRect(macd_pos, ImVec2(macd_pos.x + macd_size.x, macd_pos.y + macd_size.y), IM_COL32(100, 100, 100, 150));
+        // KDJ panel
+        if (opt.show_kdj) {
+            dl->PushClipRect(kdj_pos, ImVec2(kdj_pos.x + kdj_size.x, kdj_pos.y + kdj_size.y), true);
+            auto kdj_y = [&](double v) { return kdj_pos.y + (float)((100.0 - v) / 100.0) * kdj_size.y; };
+            // 20/80 bands
+            dl->AddLine(ImVec2(kdj_pos.x, kdj_y(20)), ImVec2(kdj_pos.x + kdj_size.x, kdj_y(20)), IM_COL32(150, 150, 150, 160));
+            dl->AddLine(ImVec2(kdj_pos.x, kdj_y(80)), ImVec2(kdj_pos.x + kdj_size.x, kdj_y(80)), IM_COL32(150, 150, 150, 160));
+            auto draw_line_local = [&](const std::vector<double>& s, ImU32 col) {
+                ImVec2 prev; bool hp=false;
+                for (int i = begin; i < end; ++i) {
+                    double v = s[i];
+                    if (std::isnan(v)) { hp=false; continue; }
+                    float x = kdj_pos.x + (i - vs.scroll_x) * vs.scale_x;
+                    float y = kdj_y(v);
+                    ImVec2 cur(x,y);
+                    if (hp) dl->AddLine(prev, cur, col, 1.5f);
+                    prev = cur; hp=true;
+                }
+            };
+            draw_line_local(k_vals, IM_COL32(64, 158, 255, 255));   // K - blue
+            draw_line_local(d_vals, IM_COL32(255, 193, 7, 255));    // D - yellow
+            draw_line_local(j_vals, IM_COL32(255, 99, 71, 255));    // J - tomato red
+            dl->PopClipRect();
+        }
+
+
         // Margin separator
         dl->AddLine(ImVec2(margin_x0, canvas_pos.y), ImVec2(margin_x0, canvas_pos.y + canvas_size.y), IM_COL32(100, 100, 100, 120));
     // Axis background (separate strip at bottom)
@@ -966,6 +1003,17 @@ int main(int, char **) {
             }
             // RSI
             ImGui::TextColored(col_rsi, "RSI(%d): %s", rsi_period, rs);
+            // KDJ in data box
+            if (opt.show_kdj) {
+                char kb[32], dbuf[32], jb[32];
+                format_opt(k_vals[cross_idx], kb, sizeof(kb));
+                format_opt(d_vals[cross_idx], dbuf, sizeof(dbuf));
+                format_opt(j_vals[cross_idx], jb, sizeof(jb));
+                ImGui::Text("KDJ(%d):", kdj_period);
+                ImGui::SameLine(); ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32(64, 158, 255, 255)), "K %s", kb);
+                ImGui::SameLine(); ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32(255, 193, 7, 255)),  " D %s", dbuf);
+                ImGui::SameLine(); ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32(255, 99, 71, 255)),  " J %s", jb);
+            }
             // BOLL values
             if (opt.show_boll) {
                 auto C = [](ImVec4 v){ return v; };
@@ -1115,6 +1163,17 @@ int main(int, char **) {
                         rsi_labels.push_back({rsi_y(rv), IM_COL32(64, 158, 255, 255), false, std::string(rb)});
                         draw_labels(rsi_labels, rsi_pos, rsi_size);
                     }
+                }
+
+                // KDJ labels (hollow)
+                if (opt.show_kdj) {
+                    auto kdj_y = [&](double v) { return kdj_pos.y + (float)((100.0 - v) / 100.0) * kdj_size.y; };
+                    std::vector<Label> kdj_labels;
+                    auto pushk = [&](double v, ImU32 col, const char* nm){ if (!std::isnan(v)) { char b[64]; snprintf(b, sizeof(b), "%s %.2f", nm, v); kdj_labels.push_back({kdj_y(v), col, false, std::string(b)}); } };
+                    pushk(k_vals[label_idx], IM_COL32(64, 158, 255, 255), "K");
+                    pushk(d_vals[label_idx], IM_COL32(255, 193, 7, 255),  "D");
+                    pushk(j_vals[label_idx], IM_COL32(255, 99, 71, 255),  "J");
+                    draw_labels(kdj_labels, kdj_pos, kdj_size);
                 }
 
                 // MACD labels (hollow). Colors: line white, signal gold, hist green/red by sign
@@ -1296,6 +1355,7 @@ int main(int, char **) {
         ImGui::Checkbox("EMA50", &opt.show_ema50);
         ImGui::Checkbox("MACD", &opt.show_macd);
         ImGui::Checkbox("RSI", &opt.show_rsi);
+    ImGui::Checkbox("KDJ", &opt.show_kdj);
         ImGui::Checkbox("Volume", &opt.show_volume);
         ImGui::Checkbox("Close line", &opt.show_close_line);
     ImGui::Checkbox("BOLL", &opt.show_boll);
@@ -1313,7 +1373,8 @@ int main(int, char **) {
         dirty |= ImGui::SliderInt("MACD fast", &macd_fast, 2, 100);
         dirty |= ImGui::SliderInt("MACD slow", &macd_slow, 3, 200);
         dirty |= ImGui::SliderInt("MACD signal", &macd_signal, 2, 100);
-        dirty |= ImGui::SliderInt("RSI period", &rsi_period, 2, 200);
+    dirty |= ImGui::SliderInt("RSI period", &rsi_period, 2, 200);
+    dirty |= ImGui::SliderInt("KDJ period", &kdj_period, 2, 200);
     dirty |= ImGui::SliderInt("BOLL period", &boll_period, 2, 300);
     dirty |= ImGui::SliderFloat("BOLL k", &boll_k, 0.5f, 4.0f, "%.2f");
     // BOLL style (no recompute required)
@@ -1333,6 +1394,7 @@ int main(int, char **) {
             ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
             ind::rsi(closes, rsi_period, rsi_v);
             compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
+            ind::kdj(closes, highs, lows, kdj_period, k_vals, d_vals, j_vals);
         }
         ImGui::Separator();
         ImGui::Text("Load CSV");
