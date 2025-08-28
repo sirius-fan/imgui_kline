@@ -2,9 +2,10 @@
 #include <vector>
 #include <numeric>
 #include <cmath>
+#include <cstdint>
 
 struct Candle {
-    double time;   // seconds or index
+    uint64_t time;   // seconds or index
     double open;
     double high;
     double low;

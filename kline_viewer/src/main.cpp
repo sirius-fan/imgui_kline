@@ -3,12 +3,12 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include <cstdint>
 #include <stdio.h>
 #include <vector>
 #include <string>
 #include <algorithm>
 #include <cmath>
-#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <ctime>
@@ -84,7 +84,7 @@ static std::vector<Candle> gen_sample_data(size_t n = 600) {
     std::vector<Candle> v;
     v.reserve(n);
     double price = 100.0;
-    auto t0 = 0.0;
+    auto t0 = 0;
     for (size_t i = 0; i < n; ++i) {
         double drift = (std::sin(i * 0.03) + std::sin(i * 0.013)) * 0.5;
         double vol = 0.8 + 0.4 * std::sin(i * 0.17 + 0.5);
@@ -94,7 +94,7 @@ static std::vector<Candle> gen_sample_data(size_t n = 600) {
         double close = open + drift * vol;
         double volume = 1000.0 + 400.0 * std::sin(i * 0.07);
         price = close;
-        v.push_back({t0 + (double)i, open, high, low, close, volume});
+        v.push_back({t0 + (uint64_t)i, open, high, low, close, volume});
     }
     return v;
 }
@@ -144,12 +144,12 @@ static bool load_csv_sh_index(const std::string &path, std::vector<Candle> &out)
         double low = to_d(cols[4]);
         double close = to_d(cols[5]);
         double vol = to_d(cols[6]);
-        out.push_back({(double)tt, open, high, low, close, vol});
+        out.push_back({(uint64_t)tt, open, high, low, close, vol});
     }
     return !out.empty();
 }
 
-static inline void format_time_label(double t, char *buf, size_t n, bool with_time = false) {
+static inline void format_time_label(uint64_t t, char *buf, size_t n, bool with_time = false) {
     std::time_t tt = (std::time_t)t;
     std::tm *lt = std::localtime(&tt);
     if (!lt) {
@@ -317,9 +317,18 @@ int main(int, char **) {
     if (!glfwInit())
         return 1;
 
+    #if defined(__APPLE__)
+    #define GL_SILENCE_DEPRECATION
+    const char *glsl_version = "#version 150";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    #elif defined(__linux__)
     const char *glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    #endif
 
     GLFWwindow *window = glfwCreateWindow(1280, 800, "ImGui K-Line Viewer", NULL, NULL);
     if (window == NULL)
@@ -961,53 +970,6 @@ int main(int, char **) {
         }
 
         ImGui::End();
-
-        // {
-        // // Jump window: jump to date/time or to oldest/newest
-        // ImGui::Begin("Jump");
-        // static char date_buf[16] = "";   // YYYY-MM-DD
-        // static char time_buf[8]  = "";   // HH:MM
-        // // prefill with current crosshair candle date/time or latest candle if empty
-        // if (date_buf[0] == '\0' || time_buf[0] == '\0') {
-        //     int seed_idx = (cross_idx >= 0 ? cross_idx : (int)candles.size()-1);
-        //     seed_idx = std::clamp(seed_idx, 0, (int)candles.size()-1);
-        //     if (!candles.empty()) {
-        //         char tmp[64]; format_time_label(candles[seed_idx].time, tmp, sizeof(tmp), true);
-        //         // split into date and time
-        //         // expected format: YYYY-MM-DD HH:MM
-        //         const char* sp = std::strchr(tmp, ' ');
-        //         if (sp) {
-        //             std::snprintf(date_buf, sizeof(date_buf), "%.*s", (int)(sp - tmp), tmp);
-        //             std::snprintf(time_buf, sizeof(time_buf), "%s", sp + 1);
-        //         }
-        //     }
-        // }
-        // ImGui::InputText("Date (YYYY-MM-DD)", date_buf, sizeof(date_buf));
-        // // ImGui::SameLine();
-        // ImGui::InputText("Time (HH:MM)", time_buf, sizeof(time_buf));
-        // bool jump_clicked = ImGui::Button("Jump");
-        // ImGui::SameLine();
-        // bool first_clicked = ImGui::Button("<< Oldest");
-        // ImGui::SameLine();
-        // bool last_clicked = ImGui::Button("Newest >>");
-        // int jump_to_idx = -1;
-        // if (jump_clicked) {
-        //     std::time_t tt{};
-        //     if (parse_datetime_to_time_t(date_buf, time_buf, tt)) {
-        //         jump_to_idx = find_nearest_index_by_time(candles, tt);
-        //     }
-        // }
-        // if (first_clicked && !candles.empty()) jump_to_idx = 0;
-        // if (last_clicked && !candles.empty()) jump_to_idx = (int)candles.size() - 1;
-        // if (jump_to_idx >= 0) {
-        //     // Center the selected index in the main plot width
-        //     float visible_count = std::max(1.0f, main_size.x / std::max(1.0f, vs.scale_x));
-        //     float center_offset = visible_count * 0.5f;
-        //     float upper = std::max(0.0f, (float)candles.size() - visible_count);
-        //     vs.scroll_x = std::clamp((float)jump_to_idx - center_offset, 0.0f, upper);
-        // }
-        // ImGui::End();
-        // }
 
         jump_window(candles, cross_idx, vs, main_size);
         // Trades window: add trade by date/time and price
