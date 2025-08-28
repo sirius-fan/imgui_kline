@@ -162,6 +162,18 @@ static inline void format_time_label(uint64_t t, char *buf, size_t n, bool with_
         std::strftime(buf, n, "%Y-%m-%d", lt);
 }
 
+/**
+ * 绘制面板内的价格网格与刻度文本（仅水平线）。
+ *
+ * 参数说明：
+ * - p0: 面板左上角坐标（屏幕坐标，像素）
+ * - p1: 面板右下角坐标（屏幕坐标，像素）
+ * - y_min/y_max: 当前面板对应的数据值范围，y 轴从上到下映射 y_max → y_min
+ *
+ * 说明：
+ * - 仅负责网格与刻度文本的绘制，不包含裁剪；调用方应在调用前设置好裁剪矩形。
+ * - 刻度文本使用 y_max→y_min 的线性映射计算对应的价格值。
+ */
 static void draw_grid(const ImVec2 &p0, const ImVec2 &p1, float y_min, float y_max) {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const ImU32 col_grid = IM_COL32(64, 64, 64, 80);
@@ -178,6 +190,21 @@ static void draw_grid(const ImVec2 &p0, const ImVec2 &p1, float y_min, float y_m
     }
 }
 
+/**
+ * 绘制 K 线（蜡烛图）。
+ *
+ * 参数说明：
+ * - data: K 线数据序列（按时间升序）
+ * - vs: 视图状态，包含横向缩放（scale_x）与滚动偏移（scroll_x）
+ * - canvas_pos/canvas_size: 主图绘制区域左上角与尺寸（像素）
+ * - begin/end: 需要绘制的数据索引区间 [begin, end)
+ * - y_min/y_max: 映射到屏幕坐标的数值范围
+ *
+ * 说明：
+ * - 上涨（收≥开）用绿色，下跌用红色。
+ * - 细实体（|y_open−y_close| < 1 像素）退化为一条实线以提升可读性。
+ * - 不负责裁剪，调用方需在外部 PushClipRect。
+ */
 static void draw_candles(const std::vector<Candle> &data, const ViewState &vs, const ImVec2 &canvas_pos, const ImVec2 &canvas_size,
                          int begin, int end, float y_min, float y_max) {
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -210,6 +237,22 @@ static void draw_candles(const std::vector<Candle> &data, const ViewState &vs, c
     }
 }
 
+/**
+ * 绘制一条按数据点连线的折线（指标/均线等）。
+ *
+ * 参数说明：
+ * - series: 待绘制的数值序列（NAN 值会打断连线）
+ * - vs: 视图状态（scale_x/scroll_x）
+ * - canvas_pos/canvas_size: 绘制区域（像素）
+ * - begin/end: 绘制索引范围 [begin, end)
+ * - y_min/y_max: 垂直方向映射范围
+ * - col: 线条颜色（ImU32）
+ * - thickness: 线宽（像素）
+ *
+ * 说明：
+ * - series[i] 为 NAN 时不连线，可用于产生断点。
+ * - 仅负责连线，不包含裁剪；调用方需先设置 PushClipRect。
+ */
 static void draw_line_series(const std::vector<double> &series, const ViewState &vs,
                              const ImVec2 &canvas_pos, const ImVec2 &canvas_size,
                              int begin, int end, float y_min, float y_max, ImU32 col,
@@ -264,14 +307,14 @@ static void compute_boll(const std::vector<double>& series, int period, double k
     }
 }
 
-void jump_window(const std::vector<Candle> &candles, int cross_idx, ViewState &vs, const ImVec2 &main_size) {
+void jump_window(const std::vector<Candle> &candles, ViewState &vs, const ImVec2 &main_size) {
     // Jump window: jump to date/time or to oldest/newest
     ImGui::Begin("Jump");
     static char date_buf[16] = ""; // YYYY-MM-DD
     static char time_buf[8] = "";  // HH:MM
-    // prefill with current crosshair candle date/time or latest candle if empty
+    // prefill with  latest candle if empty
     if (date_buf[0] == '\0' || time_buf[0] == '\0') {
-        int seed_idx = (cross_idx >= 0 ? cross_idx : (int)candles.size() - 1);
+        int seed_idx = (int)candles.size() - 1;
         seed_idx = std::clamp(seed_idx, 0, (int)candles.size() - 1);
         if (!candles.empty()) {
             char tmp[64];
@@ -324,10 +367,11 @@ int main(int, char **) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    #elif defined(__linux__)
+    // #elif defined(__linux__)
+    #else
     const char *glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     #endif
 
     GLFWwindow *window = glfwCreateWindow(1280, 800, "ImGui K-Line Viewer", NULL, NULL);
@@ -342,9 +386,11 @@ int main(int, char **) {
     (void)io;
     // Docking is not available on master branch by default
     ImGui::StyleColorsDark();
+    // ImGui::StyleColorsLight(); // 蜡烛图需要自行更改浅色
 
     // Load Chinese font for UI (try a few relative paths)
     {
+        const auto font_size = 15.0f;
         const char *font_rel1 = "微软雅黑.ttf";
         const char *font_rel2 = "../微软雅黑.ttf";
         const char *font_rel3 = "../../微软雅黑.ttf";
@@ -353,9 +399,9 @@ int main(int, char **) {
         cfg.OversampleV = 1;
         cfg.PixelSnapH = true;
         const ImWchar *ranges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-        ImFont *font_cn = io.Fonts->AddFontFromFileTTF(font_rel1, 18.0f, &cfg, ranges);
-        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel2, 18.0f, &cfg, ranges);
-        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel3, 18.0f, &cfg, ranges);
+        ImFont *font_cn = io.Fonts->AddFontFromFileTTF(font_rel1, font_size, &cfg, ranges);
+        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel2, font_size, &cfg, ranges);
+        if (!font_cn) font_cn = io.Fonts->AddFontFromFileTTF(font_rel3, font_size, &cfg, ranges);
         if (font_cn) io.FontDefault = font_cn; // use as default if loaded
     }
 
@@ -436,16 +482,18 @@ int main(int, char **) {
         float margin_x0 = canvas_pos.x + plot_width;
         float margin_x1 = canvas_pos.x + canvas_size.x;
 
-        // Layout: main, optional RSI, optional MACD stacked vertically
+    // Layout: main, optional RSI, optional MACD stacked vertically, plus a dedicated bottom time axis area
         const float spacing = 6.0f;
+    const float axis_h = 28.0f; // dedicated bottom time axis height
         const float vol_h = opt.show_volume ? 80.0f : 0.0f;
         const float rsi_h = opt.show_rsi ? 80.0f : 0.0f;
         const float macd_h = opt.show_macd ? 120.0f : 0.0f;
-        int gaps = 0;
+    int gaps = 0;
         if (opt.show_volume) gaps++;
         if (opt.show_rsi) gaps++;
         if (opt.show_macd) gaps++;
-        float main_h = canvas_size.y - vol_h - rsi_h - macd_h - spacing * gaps;
+    // add one extra gap above the time axis strip
+    float main_h = canvas_size.y - axis_h - vol_h - rsi_h - macd_h - spacing * (gaps + 1);
         if (main_h < 120.0f) main_h = 120.0f;
         ImVec2 main_pos = canvas_pos;
         ImVec2 main_size = ImVec2(plot_width, main_h);
@@ -455,6 +503,10 @@ int main(int, char **) {
         ImVec2 rsi_size = ImVec2(plot_width, rsi_h);
         ImVec2 macd_pos = (opt.show_rsi ? ImVec2(rsi_pos.x, rsi_pos.y + rsi_size.y + (opt.show_macd ? spacing : 0.0f)) : (opt.show_volume ? ImVec2(vol_pos.x, vol_pos.y + vol_size.y + (opt.show_macd ? spacing : 0.0f)) : ImVec2(main_pos.x, main_pos.y + main_size.y + (opt.show_macd ? spacing : 0.0f))));
         ImVec2 macd_size = ImVec2(plot_width, macd_h);
+    // Bottom time axis strip position/size (fixed height)
+    ImVec2 axis_pos = ImVec2(main_pos.x, canvas_pos.y + canvas_size.y - axis_h);
+    ImVec2 axis_size = ImVec2(plot_width, axis_h);
+
 
         // Interaction: mouse wheel zoom/scroll
         ImGuiIO &io = ImGui::GetIO();
@@ -504,10 +556,13 @@ int main(int, char **) {
         auto rect = [&](ImVec2 p, ImVec2 s) { dl->AddRectFilled(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(20,20,20,255)); dl->AddRect(p, ImVec2(p.x+s.x, p.y+s.y), IM_COL32(100,100,100,120)); };
         rect(main_pos, main_size);
         if (opt.show_volume) rect(vol_pos, vol_size);
-        if (opt.show_rsi) dl->AddRect(rsi_pos, ImVec2(rsi_pos.x + rsi_size.x, rsi_pos.y + rsi_size.y), IM_COL32(100, 100, 100, 150));
-        if (opt.show_macd) dl->AddRect(macd_pos, ImVec2(macd_pos.x + macd_size.x, macd_pos.y + macd_size.y), IM_COL32(100, 100, 100, 150));
+    if (opt.show_rsi) dl->AddRect(rsi_pos, ImVec2(rsi_pos.x + rsi_size.x, rsi_pos.y + rsi_size.y), IM_COL32(100, 100, 100, 150));
+    if (opt.show_macd) dl->AddRect(macd_pos, ImVec2(macd_pos.x + macd_size.x, macd_pos.y + macd_size.y), IM_COL32(100, 100, 100, 150));
         // Margin separator
         dl->AddLine(ImVec2(margin_x0, canvas_pos.y), ImVec2(margin_x0, canvas_pos.y + canvas_size.y), IM_COL32(100, 100, 100, 120));
+    // Axis background (separate strip at bottom)
+    dl->AddRectFilled(axis_pos, ImVec2(axis_pos.x + axis_size.x, axis_pos.y + axis_size.y), IM_COL32(18, 18, 18, 255));
+    dl->AddRect(axis_pos, ImVec2(axis_pos.x + axis_size.x, axis_pos.y + axis_size.y), IM_COL32(100, 100, 100, 150));
 
     // Main chart (clip to plot area)
         dl->PushClipRect(main_pos, ImVec2(main_pos.x + main_size.x, main_pos.y + main_size.y), true);
@@ -804,21 +859,7 @@ int main(int, char **) {
             ImGui::EndChild();
         }
 
-        // Time axis at the very bottom panel (whichever is last visible)
-        ImVec2 axis_pos = main_pos;
-        ImVec2 axis_size = main_size;
-        if (opt.show_volume) {
-            axis_pos = vol_pos;
-            axis_size = vol_size;
-        }
-        if (opt.show_rsi) {
-            axis_pos = rsi_pos;
-            axis_size = rsi_size;
-        }
-        if (opt.show_macd) {
-            axis_pos = macd_pos;
-            axis_size = macd_size;
-        }
+        // Dedicated bottom time axis (ticks and labels)
         float axis_y = axis_pos.y + axis_size.y;
         dl->AddLine(ImVec2(axis_pos.x, axis_y), ImVec2(axis_pos.x + axis_size.x, axis_y), IM_COL32(120, 120, 120, 160));
         int px_step = 80; // min pixel between ticks
@@ -832,6 +873,24 @@ int main(int, char **) {
             format_time_label(candles[i].time, label, sizeof(label), false);
             ImVec2 sz = ImGui::CalcTextSize(label);
             dl->AddText(ImVec2(x - sz.x * 0.5f, axis_y - sz.y - 8.0f), IM_COL32(180, 180, 180, 220), label);
+        }
+        // Crosshair time bubble in axis strip
+        if (crosshair_visible && cross_idx >= 0 && cross_idx < (int)candles.size()) {
+            float cx = axis_pos.x + (cross_idx - vs.scroll_x) * vs.scale_x;
+            char tbuf[64];
+            format_time_label(candles[cross_idx].time, tbuf, sizeof(tbuf), true);
+            ImVec2 ts = ImGui::CalcTextSize(tbuf);
+            float padx = 6.0f, pady = 3.0f;
+            float w = ts.x + padx * 2.0f;
+            float h = ts.y + pady * 2.0f;
+            float x0 = std::clamp(cx - w * 0.5f, axis_pos.x, axis_pos.x + axis_size.x - w);
+            float y0 = axis_pos.y + (axis_size.y - h) * 0.5f;
+            ImVec2 p1(x0, y0), p2(x0 + w, y0 + h);
+            dl->AddRectFilled(p1, p2, IM_COL32(40, 40, 40, 230), 4.0f);
+            dl->AddRect(p1, p2, IM_COL32(0, 0, 0, 200), 4.0f, 0, 1.0f);
+            dl->AddText(ImVec2(x0 + padx, y0 + pady), IM_COL32(240, 240, 240, 255), tbuf);
+            // small top tick aligned with bubble center
+            dl->AddLine(ImVec2(cx, axis_pos.y), ImVec2(cx, axis_pos.y + 6.0f), IM_COL32(180, 180, 180, 160));
         }
 
         // Right-side floating labels in the reserved margin for each panel (doesn't overlap plots)
@@ -971,7 +1030,7 @@ int main(int, char **) {
 
         ImGui::End();
 
-        jump_window(candles, cross_idx, vs, main_size);
+        jump_window(candles, vs, main_size);
         // Trades window: add trade by date/time and price
         ImGui::Begin("Trades");
         ImGui::Checkbox("Show trades", &show_trades);
