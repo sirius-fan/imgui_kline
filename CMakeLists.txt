@@ -62,6 +62,15 @@ find_package(OpenGL REQUIRED)
 # Link
 target_link_libraries(kline_viewer PRIVATE imgui ${GLFW_LIBS} OpenGL::GL)
 
+# SQLite3 (for DB data source)
+find_package(SQLite3 QUIET)
+if (SQLite3_FOUND)
+    target_link_libraries(kline_viewer PRIVATE SQLite::SQLite3)
+else()
+    # Fallback: try linking with system sqlite3 (Linux)
+    target_link_libraries(kline_viewer PRIVATE sqlite3)
+endif()
+
 # Linux specifics
 if (UNIX AND NOT APPLE)
     target_link_libraries(kline_viewer PRIVATE dl pthread)

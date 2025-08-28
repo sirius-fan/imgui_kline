@@ -16,6 +16,8 @@
 #include <limits>
 
 #include <GLFW/glfw3.h>
+// SQLite for DB data source
+#include <sqlite3.h>
 
 #include "indicators.hpp"
 
@@ -160,6 +162,94 @@ static inline void format_time_label(uint64_t t, char *buf, size_t n, bool with_
         std::strftime(buf, n, "%Y-%m-%d %H:%M", lt);
     else
         std::strftime(buf, n, "%Y-%m-%d", lt);
+}
+
+// --- SQLite 1m loader ---
+struct DbLoadOptions {
+    std::string db_path;
+    std::string symbol;
+    int64_t start_ms = 0;             // inclusive
+    int64_t end_ms = (int64_t)9e18;   // inclusive
+};
+
+static bool load_sqlite_1m(const DbLoadOptions &opt, std::vector<Candle> &out) {
+    out.clear();
+    sqlite3 *db = nullptr;
+    int rc = sqlite3_open(opt.db_path.c_str(), &db);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "SQLite open failed: %s\n", sqlite3_errmsg(db));
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    const char *sql = "SELECT open_time, symbol, close_time, open_price, high_price, low_price, close_price, volume "
+                      "FROM klines_1m WHERE symbol = ? AND open_time >= ? AND open_time <= ? ORDER BY open_time ASC;";
+    sqlite3_stmt *stmt = nullptr;
+    rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "SQLite prepare failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return false;
+    }
+    sqlite3_bind_text(stmt, 1, opt.symbol.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, opt.start_ms);
+    sqlite3_bind_int64(stmt, 3, opt.end_ms);
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        int64_t open_time_ms = sqlite3_column_int64(stmt, 0);
+        // const unsigned char* sym = sqlite3_column_text(stmt, 1);
+        // int64_t close_time_ms = sqlite3_column_int64(stmt, 2);
+        double open = sqlite3_column_double(stmt, 3);
+        double high = sqlite3_column_double(stmt, 4);
+        double low  = sqlite3_column_double(stmt, 5);
+        double close = sqlite3_column_double(stmt, 6);
+        double vol = sqlite3_column_double(stmt, 7);
+        Candle c;
+        c.time = (uint64_t)(open_time_ms / 1000); // seconds
+        c.open = open; c.high = high; c.low = low; c.close = close; c.volume = vol;
+        out.push_back(c);
+    }
+    bool ok = (rc == SQLITE_DONE);
+    if (!ok) fprintf(stderr, "SQLite step error: %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return ok && !out.empty();
+}
+
+// --- Aggregate 1m to higher timeframe (O/H/L/C/V) ---
+static std::vector<Candle> aggregate_timeframe(const std::vector<Candle> &base_1m, int interval_sec) {
+    std::vector<Candle> out;
+    if (base_1m.empty() || interval_sec <= 60) return base_1m; // 1m passthrough
+    Candle cur{};
+    bool has = false;
+    uint64_t bucket = 0;
+    for (const auto &c : base_1m) {
+        uint64_t b = (c.time / (uint64_t)interval_sec) * (uint64_t)interval_sec;
+        if (!has) {
+            has = true;
+            bucket = b;
+            cur.time = bucket;
+            cur.open = c.open;
+            cur.high = c.high;
+            cur.low  = c.low;
+            cur.close = c.close;
+            cur.volume = c.volume;
+        } else if (b == bucket) {
+            cur.high = std::max(cur.high, c.high);
+            cur.low  = std::min(cur.low, c.low);
+            cur.close = c.close;
+            cur.volume += c.volume;
+        } else {
+            out.push_back(cur);
+            bucket = b;
+            cur.time = bucket;
+            cur.open = c.open;
+            cur.high = c.high;
+            cur.low  = c.low;
+            cur.close = c.close;
+            cur.volume = c.volume;
+        }
+    }
+    if (has) out.push_back(cur);
+    return out;
 }
 
 /**
@@ -409,7 +499,8 @@ int main(int, char **) {
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     // Data
-    std::vector<Candle> candles;
+    std::vector<Candle> candles;      // active timeframe data for rendering
+    std::vector<Candle> base_1m;      // sqlite 1m base when DB source is used
     // Try to load from CSV (several relative paths tried), fallback to synthetic
     const char *csv_rel1 = "test_data/sh000001(上证指数).csv";
     const char *csv_rel2 = "../test_data/sh000001(上证指数).csv";
@@ -461,6 +552,39 @@ int main(int, char **) {
     // Trades state
     std::vector<TradeAnnot> trades;
     bool show_trades = true;
+
+    // Data source control state
+    enum class SourceType { CSV, SQLITE_1M };
+    SourceType source = SourceType::CSV;
+    // Timeframe list (seconds)
+    struct Tf { const char* name; int secs; };
+    static const Tf TF_LIST[] = {
+        {"1m", 60}, {"5m", 300}, {"15m", 900}, {"30m", 1800}, {"1h", 3600}, {"4h", 14400}, {"1d", 86400}
+    };
+    int tf_index = 0; // default 1m for DB; for CSV it will be informational only
+    // DB inputs
+    DbLoadOptions dbopt;
+    dbopt.db_path = "test_data/BTCUSDC.db";
+    dbopt.symbol = "BTCUSDC";
+    dbopt.start_ms = 0; // load all by default
+    dbopt.end_ms = (int64_t)9e18;
+
+    auto recompute_series = [&]() {
+        closes.clear(); highs.clear(); lows.clear();
+        closes.reserve(candles.size()); highs.reserve(candles.size()); lows.reserve(candles.size());
+        for (auto &c : candles) { closes.push_back(c.close); highs.push_back(c.high); lows.push_back(c.low); }
+        sma_v = ind::sma(closes, sma_period);
+        ema_v = ind::ema(closes, ema_period);
+        ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
+        ind::rsi(closes, rsi_period, rsi_v);
+        compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
+        // Reset scroll to show last if dataset changed significantly
+        float visible_count = std::max(1.0f, 1200.0f / std::max(1.0f, vs.scale_x));
+        if ((int)visible_count < (int)candles.size())
+            vs.scroll_x = std::max(0.0f, (float)candles.size() - visible_count);
+        else
+            vs.scroll_x = 0.0f;
+    };
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -1075,6 +1199,59 @@ int main(int, char **) {
         ImGui::SliderFloat("Right margin", &right_margin, 60.0f, 240.0f, "%.0f px");
         ImGui::Text("Scroll: %.1f", vs.scroll_x);
         ImGui::Separator();
+        // Data Source
+        ImGui::Text("Data Source");
+        int src = (source == SourceType::CSV ? 0 : 1);
+        const char* src_names[] = {"CSV (SH Index)", "SQLite (1m)"};
+        if (ImGui::Combo("Source", &src, src_names, IM_ARRAYSIZE(src_names))) {
+            source = (src == 0 ? SourceType::CSV : SourceType::SQLITE_1M);
+        }
+        if (source == SourceType::SQLITE_1M) {
+            static char db_path_buf[512] = "";
+            static char symbol_buf[128] = "";
+            if (db_path_buf[0] == '\0') std::snprintf(db_path_buf, sizeof(db_path_buf), "%s", dbopt.db_path.c_str());
+            if (symbol_buf[0] == '\0') std::snprintf(symbol_buf, sizeof(symbol_buf), "%s", dbopt.symbol.c_str());
+            ImGui::InputText("DB Path", db_path_buf, sizeof(db_path_buf));
+            ImGui::InputText("Symbol", symbol_buf, sizeof(symbol_buf));
+            ImGui::Text("Timeframe"); ImGui::SameLine();
+            ImGui::Combo("##tf", &tf_index, [](void* data,int idx,const char** out_text){ auto list=(const Tf*)data; *out_text=list[idx].name; return true; }, (void*)TF_LIST, IM_ARRAYSIZE(TF_LIST));
+            // Range in ms
+            static int64_t ui_start_ms = dbopt.start_ms;
+            static int64_t ui_end_ms   = dbopt.end_ms;
+            ImGui::InputScalar("Start ms", ImGuiDataType_S64, &ui_start_ms);
+            ImGui::InputScalar("End ms", ImGuiDataType_S64, &ui_end_ms);
+            bool pressed = ImGui::Button("Load from DB");
+            if (pressed) {
+                dbopt.db_path = db_path_buf;
+                dbopt.symbol = symbol_buf;
+                dbopt.start_ms = ui_start_ms;
+                dbopt.end_ms = ui_end_ms;
+                std::vector<Candle> tmp1m;
+                if (load_sqlite_1m(dbopt, tmp1m)) {
+                    base_1m.swap(tmp1m);
+                    // aggregate
+                    candles = aggregate_timeframe(base_1m, TF_LIST[tf_index].secs);
+                    active_csv = dbopt.db_path + ":" + dbopt.symbol;
+                    recompute_series();
+                }
+            }
+            // Re-aggregate on tf change live (if base loaded)
+            static int prev_tf = tf_index;
+            if (tf_index != prev_tf) {
+                prev_tf = tf_index;
+                if (!base_1m.empty()) {
+                    candles = aggregate_timeframe(base_1m, TF_LIST[tf_index].secs);
+                    recompute_series();
+                }
+            }
+        } else {
+            // CSV source: timeframe is fixed by file; show combo disabled
+            int dummy_tf = 0;
+            ImGui::BeginDisabled();
+            ImGui::Combo("##tf_csv", &dummy_tf, [](void* data,int idx,const char** out_text){ auto list=(const Tf*)data; *out_text=list[idx].name; return true; }, (void*)TF_LIST, IM_ARRAYSIZE(TF_LIST));
+            ImGui::EndDisabled();
+        }
+        ImGui::Separator();
         ImGui::Text("Indicators");
         ImGui::Checkbox("SMA20", &opt.show_sma20);
         ImGui::Checkbox("EMA50", &opt.show_ema50);
@@ -1127,20 +1304,11 @@ int main(int, char **) {
         if (ImGui::Button("Load")) {
             std::vector<Candle> tmp;
             if (load_csv_sh_index(file_buf, tmp)) {
+                source = SourceType::CSV;
+                base_1m.clear();
                 candles.swap(tmp);
                 active_csv = file_buf;
-                closes.clear();
-                highs.clear();
-                lows.clear();
-                closes.reserve(candles.size());
-                highs.reserve(candles.size());
-                lows.reserve(candles.size());
-                for (auto &c2 : candles) { closes.push_back(c2.close); highs.push_back(c2.high); lows.push_back(c2.low); }
-                sma_v = ind::sma(closes, sma_period);
-                ema_v = ind::ema(closes, ema_period);
-                ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
-                ind::rsi(closes, rsi_period, rsi_v);
-                compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
+                recompute_series();
             }
         }
 
