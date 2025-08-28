@@ -1215,17 +1215,56 @@ int main(int, char **) {
             ImGui::InputText("Symbol", symbol_buf, sizeof(symbol_buf));
             ImGui::Text("Timeframe"); ImGui::SameLine();
             ImGui::Combo("##tf", &tf_index, [](void* data,int idx,const char** out_text){ auto list=(const Tf*)data; *out_text=list[idx].name; return true; }, (void*)TF_LIST, IM_ARRAYSIZE(TF_LIST));
-            // Range in ms
-            static int64_t ui_start_ms = dbopt.start_ms;
-            static int64_t ui_end_ms   = dbopt.end_ms;
-            ImGui::InputScalar("Start ms", ImGuiDataType_S64, &ui_start_ms);
-            ImGui::InputScalar("End ms", ImGuiDataType_S64, &ui_end_ms);
+            // Date/Time range inputs instead of milliseconds
+            static char start_date[16] = ""; // YYYY-MM-DD
+            static char start_time[8]  = ""; // HH:MM
+            static char end_date[16]   = "";
+            static char end_time[8]    = "";
+            auto ms_to_dt = [](int64_t ms, char *d, size_t dn, char *t, size_t tn){
+                if (ms <= 0) { if (d) d[0]='\0'; if (t) t[0]='\0'; return; }
+                std::time_t tt = (std::time_t)(ms/1000);
+                std::tm *lt = std::localtime(&tt);
+                if (!lt) { if (d) d[0]='\0'; if (t) t[0]='\0'; return; }
+                if (d) std::strftime(d, dn, "%Y-%m-%d", lt);
+                if (t) std::strftime(t, tn, "%H:%M", lt);
+            };
+            // Prefill once
+            if (start_date[0] == '\0' || start_time[0] == '\0') {
+                if (!base_1m.empty()) {
+                    int64_t ms = (int64_t)base_1m.front().time * 1000;
+                    ms_to_dt(ms, start_date, sizeof(start_date), start_time, sizeof(start_time));
+                } else if (dbopt.start_ms > 0) {
+                    ms_to_dt(dbopt.start_ms, start_date, sizeof(start_date), start_time, sizeof(start_time));
+                } else {
+                    std::snprintf(start_date, sizeof(start_date), "2024-01-01");
+                    std::snprintf(start_time, sizeof(start_time), "00:00");
+                }
+            }
+            if (end_date[0] == '\0' || end_time[0] == '\0') {
+                if (!base_1m.empty()) {
+                    int64_t ms = (int64_t)base_1m.back().time * 1000;
+                    ms_to_dt(ms, end_date, sizeof(end_date), end_time, sizeof(end_time));
+                } else if (dbopt.end_ms < (int64_t)9e18) {
+                    ms_to_dt(dbopt.end_ms, end_date, sizeof(end_date), end_time, sizeof(end_time));
+                } else {
+                    std::snprintf(end_date, sizeof(end_date), "2030-01-01");
+                    std::snprintf(end_time, sizeof(end_time), "00:00");
+                }
+            }
+            ImGui::InputText("Start Date", start_date, sizeof(start_date));
+            ImGui::InputText("Start Time", start_time, sizeof(start_time));
+            ImGui::InputText("End Date", end_date, sizeof(end_date));
+            ImGui::InputText("End Time", end_time, sizeof(end_time));
             bool pressed = ImGui::Button("Load from DB");
             if (pressed) {
                 dbopt.db_path = db_path_buf;
                 dbopt.symbol = symbol_buf;
-                dbopt.start_ms = ui_start_ms;
-                dbopt.end_ms = ui_end_ms;
+                // parse date/time -> ms
+                std::time_t t0{}; std::time_t t1{};
+                bool ok0 = parse_datetime_to_time_t(start_date, start_time, t0);
+                bool ok1 = parse_datetime_to_time_t(end_date, end_time, t1);
+                dbopt.start_ms = ok0 ? ((int64_t)t0 * 1000) : 0;
+                dbopt.end_ms   = ok1 ? ((int64_t)t1 * 1000) : (int64_t)9e18;
                 std::vector<Candle> tmp1m;
                 if (load_sqlite_1m(dbopt, tmp1m)) {
                     base_1m.swap(tmp1m);
