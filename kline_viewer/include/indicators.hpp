@@ -3,6 +3,7 @@
 #include <numeric>
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
 
 struct Candle {
     uint64_t time;   // seconds or index
@@ -112,6 +113,106 @@ inline void kdj(const std::vector<double>& close,
         double j = 3.0 * k - 2.0 * d;
         K[i] = k; D[i] = d; J[i] = j;
         k_prev = k; d_prev = d;
+    }
+}
+
+// Parabolic SAR (Welles Wilder)
+// step: acceleration factor step (e.g., 0.02), max_step: maximum AF (e.g., 0.2)
+// out: SAR values; trend(optional): +1 for uptrend, -1 for downtrend
+inline void parabolic_sar(const std::vector<double>& high,
+                          const std::vector<double>& low,
+                          const std::vector<double>& close,
+                          double step,
+                          double max_step,
+                          std::vector<double>& out,
+                          std::vector<int>* trend = nullptr) {
+    size_t n = high.size();
+    out.assign(n, NAN);
+    if (trend) trend->assign(n, 0);
+    if (n == 0 || low.size() != n || close.size() != n) return;
+    // Initial direction by first two closes
+    bool up = (n >= 2 ? (close[1] >= close[0]) : true);
+    double af = step;
+    double ep = up ? high[0] : low[0];
+    double sar = up ? low[0] : high[0];
+    for (size_t i = 0; i < n; ++i) {
+        if (i == 0) {
+            out[i] = sar;
+            if (trend) (*trend)[i] = up ? 1 : -1;
+            continue;
+        }
+        // Advance SAR
+        sar = sar + af * (ep - sar);
+        // Clamp to previous 1-2 bars extremes to avoid penetration
+        if (up) {
+            double ll1 = low[i-1];
+            double ll2 = (i >= 2 ? low[i-2] : ll1);
+            sar = std::min(sar, std::min(ll1, ll2));
+        } else {
+            double hh1 = high[i-1];
+            double hh2 = (i >= 2 ? high[i-2] : hh1);
+            sar = std::max(sar, std::max(hh1, hh2));
+        }
+        // Check reversal
+        bool reversal = false;
+        if (up) {
+            if (low[i] < sar) { // reverse to downtrend
+                up = false;
+                sar = ep;               // on reversal, SAR set to prior EP
+                af = step;              // reset AF
+                ep = low[i];            // new EP for downtrend
+                reversal = true;
+            }
+        } else {
+            if (high[i] > sar) { // reverse to uptrend
+                up = true;
+                sar = ep;
+                af = step;
+                ep = high[i];
+                reversal = true;
+            }
+        }
+        if (!reversal) {
+            // Update EP and AF within same trend
+            if (up) {
+                if (high[i] > ep) {
+                    ep = high[i];
+                    af = std::min(max_step, af + step);
+                }
+            } else {
+                if (low[i] < ep) {
+                    ep = low[i];
+                    af = std::min(max_step, af + step);
+                }
+            }
+        }
+        out[i] = sar;
+        if (trend) (*trend)[i] = up ? 1 : -1;
+    }
+}
+
+// TD Sequential Setup ("神奇九转"基础版): counts vs close[i - lookback]
+// Produces buy and sell setup counts (reset when condition fails). Counts grow 1..N (we'll draw up to 9).
+inline void td_setup(const std::vector<double>& close,
+                     int lookback,
+                     std::vector<int>& buyCount,
+                     std::vector<int>& sellCount) {
+    size_t n = close.size();
+    buyCount.assign(n, 0);
+    sellCount.assign(n, 0);
+    if (n == 0 || lookback <= 0) return;
+    for (size_t i = 0; i < n; ++i) {
+        if (i < (size_t)lookback) { buyCount[i] = 0; sellCount[i] = 0; continue; }
+        // Buy setup: close < close[i-lookback]
+        if (close[i] < close[i - lookback])
+            buyCount[i] = (buyCount[i-1] > 0 ? buyCount[i-1] + 1 : 1);
+        else
+            buyCount[i] = 0;
+        // Sell setup: close > close[i-lookback]
+        if (close[i] > close[i - lookback])
+            sellCount[i] = (sellCount[i-1] > 0 ? sellCount[i-1] + 1 : 1);
+        else
+            sellCount[i] = 0;
     }
 }
 

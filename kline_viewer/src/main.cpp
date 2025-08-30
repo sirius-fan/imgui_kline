@@ -4,6 +4,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include <cstdint>
+#include <cstdlib>
 #include <stdio.h>
 #include <vector>
 #include <string>
@@ -64,10 +65,14 @@ struct ChartOptions {
     bool show_boll = false;            // show Bollinger Bands
     bool show_hlc_area = false;        // show HLC area (High/Close/Low with fills)
     bool show_kdj = false;             // show KDJ subpanel
+    bool show_sar = false;             // show Parabolic SAR on main chart
+    bool show_td9 = false;             // show TD Sequential Setup (1..9) on main chart
     // BOLL styles
     ImVec4 boll_mid_color = ImVec4(0.77f, 0.35f, 0.94f, 0.86f); // ~ IM_COL32(197,90,240,220)
     ImVec4 boll_band_color = ImVec4(0.77f, 0.35f, 0.94f, 0.55f); // ~ IM_COL32(197,90,240,140)
     float  boll_thickness = 1.6f;
+    // SAR style
+    float sar_dot_size = 3.0f;
 };
 
 // Trade annotation for buy/sell pair
@@ -533,6 +538,10 @@ int main(int, char **) {
     int kdj_period = 9;
     int boll_period = 20; // Bollinger period
     float boll_k = 2.0f;  // Bollinger multiplier
+    // SAR & TD9 params
+    float sar_step = 0.02f;
+    float sar_max = 0.2f;
+    int td_lookback = 4; // classic TD setup compares with 4 bars earlier
 
     // Indicator series
     std::vector<double> sma_v = ind::sma(closes, sma_period);
@@ -548,6 +557,12 @@ int main(int, char **) {
     // Bollinger Bands series
     std::vector<double> boll_mid, boll_up, boll_dn;
     compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
+    // SAR & TD9 series
+    std::vector<double> sar_v;
+    std::vector<int> sar_trend; // +1 up, -1 down
+    ind::parabolic_sar(highs, lows, closes, sar_step, sar_max, sar_v, &sar_trend);
+    std::vector<int> td_buy, td_sell;
+    ind::td_setup(closes, td_lookback, td_buy, td_sell);
 
     ViewState vs;
     ChartOptions opt;
@@ -583,6 +598,8 @@ int main(int, char **) {
         ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
         ind::rsi(closes, rsi_period, rsi_v);
         compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
+    ind::parabolic_sar(highs, lows, closes, sar_step, sar_max, sar_v, &sar_trend);
+    ind::td_setup(closes, td_lookback, td_buy, td_sell);
         // Reset scroll to show last if dataset changed significantly
         float visible_count = std::max(1.0f, 1200.0f / std::max(1.0f, vs.scale_x));
         if ((int)visible_count < (int)candles.size())
@@ -645,12 +662,19 @@ int main(int, char **) {
         ImGuiIO &io = ImGui::GetIO();
         if (ImGui::IsWindowHovered()) {
             float wheel = io.MouseWheel;
-            if (wheel != 0.0f) {
+            float wheel_h = io.MouseWheelH; // horizontal wheel (or shift+wheel) macos touchpad
+            if (wheel != 0.0f && abs(wheel) > abs(wheel_h)) {
                 float mouse_x = io.MousePos.x - main_pos.x;
                 float center_index = vs.scroll_x + mouse_x / vs.scale_x;
                 float prev_scale = vs.scale_x;
                 vs.scale_x = std::clamp(vs.scale_x * (1.0f + wheel * 0.1f), 1.5f, 30.0f);
                 vs.scroll_x = center_index - mouse_x / vs.scale_x;
+            }
+            if (wheel_h != 0.0f && abs(wheel) < abs(wheel_h)) {
+                // move
+                double c_move_num=1.5; //TODO
+                vs.scroll_x -= c_move_num * wheel_h / vs.scale_x;
+                vs.scroll_x = std::clamp(vs.scroll_x, 0.0f, (float)candles.size());
             }
             // right click drag
             if (ImGui::IsMouseDown(1) && ImGui::IsMouseDragging(1)) {
@@ -732,6 +756,22 @@ int main(int, char **) {
         if (opt.show_sma20) draw_line_series(sma_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(255, 193, 7, 255));
         if (opt.show_ema50) draw_line_series(ema_v, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(24, 144, 255, 255));
     if (opt.show_close_line) draw_line_series(closes, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, IM_COL32(220, 220, 220, 220));
+        // SAR dots
+        if (opt.show_sar) {
+            const float H = main_size.y;
+            auto y_to = [&](double y){ float ty=(float)((y - y_min)/(y_max - y_min)); return main_pos.y + (1.0f - ty) * H; };
+            for (int i = begin; i < end; ++i) {
+                double v = (i < (int)sar_v.size() ? sar_v[i] : NAN);
+                if (std::isnan(v)) continue;
+                float x = main_pos.x + (i - vs.scroll_x) * vs.scale_x;
+                float y = y_to(v);
+                int tr = (i < (int)sar_trend.size() ? sar_trend[i] : 0);
+                ImU32 col = (tr >= 0 ? IM_COL32(64, 158, 255, 230) : IM_COL32(255, 99, 71, 230));
+                ImU32 border = IM_COL32(0,0,0,200);
+                dl->AddCircleFilled(ImVec2(x, y), opt.sar_dot_size, col);
+                dl->AddCircle(ImVec2(x, y), opt.sar_dot_size, border, 0, 1.0f);
+            }
+        }
         // HLC area (Low-Close red fill, Close-High green fill) + three lines
         if (opt.show_hlc_area) {
             ImDrawList *dlx = dl;
@@ -770,6 +810,28 @@ int main(int, char **) {
             draw_line_series(boll_up,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
             draw_line_series(boll_mid, vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_mid,  opt.boll_thickness);
             draw_line_series(boll_dn,  vs, main_pos, main_size, begin, end, (float)y_min, (float)y_max, col_band, opt.boll_thickness);
+        }
+        // TD9 numbers (setup counts 1..9)
+        if (opt.show_td9) {
+            auto y_to = [&](double y){ float ty=(float)((y - y_min)/(y_max - y_min)); return main_pos.y + (1.0f - ty) * main_size.y; };
+            for (int i = begin; i < end; ++i) {
+                int bc = (i < (int)td_buy.size() ? td_buy[i] : 0);
+                int sc = (i < (int)td_sell.size() ? td_sell[i] : 0);
+                if (bc > 0 && bc <= 9) {
+                    char buf[8]; snprintf(buf, sizeof(buf), "%d", bc);
+                    ImVec2 sz = ImGui::CalcTextSize(buf);
+                    float x = main_pos.x + (i - vs.scroll_x) * vs.scale_x - sz.x * 0.5f;
+                    float y = y_to(lows[i]) + 2.0f;
+                    dl->AddText(ImVec2(x, y), IM_COL32(82, 196, 26, 240), buf);
+                }
+                if (sc > 0 && sc <= 9) {
+                    char buf[8]; snprintf(buf, sizeof(buf), "%d", sc);
+                    ImVec2 sz = ImGui::CalcTextSize(buf);
+                    float x = main_pos.x + (i - vs.scroll_x) * vs.scale_x - sz.x * 0.5f;
+                    float y = y_to(highs[i]) - sz.y - 2.0f;
+                    dl->AddText(ImVec2(x, y), IM_COL32(255, 77, 79, 240), buf);
+                }
+            }
         }
         // Draw trades (markers + optional connecting line)
         if (show_trades && !trades.empty()) {
@@ -1027,6 +1089,24 @@ int main(int, char **) {
                 ImGui::SameLine(); ImGui::TextColored(C(col_mid),  "Mid %s", bm);
                 ImGui::SameLine(); ImGui::TextColored(C(col_band), " Up %s", bu);
                 ImGui::SameLine(); ImGui::TextColored(C(col_band), " Low %s", bl);
+            }
+            // SAR in data box
+            if (opt.show_sar && cross_idx >= 0 && cross_idx < (int)sar_v.size()) {
+                char sb[32];
+                format_opt(sar_v[cross_idx], sb, sizeof(sb));
+                int tr = (cross_idx < (int)sar_trend.size() ? sar_trend[cross_idx] : 0);
+                ImVec4 scol = ImGui::ColorConvertU32ToFloat4(tr >= 0 ? IM_COL32(64, 158, 255, 230) : IM_COL32(255, 99, 71, 230));
+                ImGui::TextColored(scol, "SAR: %s", sb);
+            }
+            // TD9 counts in data box
+            if (opt.show_td9 && cross_idx >= 0 && cross_idx < (int)td_buy.size()) {
+                int bc = td_buy[cross_idx];
+                int sc = td_sell[cross_idx];
+                ImGui::Text("TD9 L%d: ", td_lookback);
+                ImGui::SameLine();
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32(82,196,26,240)), "B %d", bc);
+                ImGui::SameLine();
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(IM_COL32(255,77,79,240)), "  S %d", sc);
             }
             ImGui::EndChild();
         }
@@ -1356,6 +1436,8 @@ int main(int, char **) {
         ImGui::Checkbox("MACD", &opt.show_macd);
         ImGui::Checkbox("RSI", &opt.show_rsi);
     ImGui::Checkbox("KDJ", &opt.show_kdj);
+    ImGui::Checkbox("SAR 抛物线", &opt.show_sar);
+    ImGui::Checkbox("神奇九转 (TD9)", &opt.show_td9);
         ImGui::Checkbox("Volume", &opt.show_volume);
         ImGui::Checkbox("Close line", &opt.show_close_line);
     ImGui::Checkbox("BOLL", &opt.show_boll);
@@ -1377,6 +1459,11 @@ int main(int, char **) {
     dirty |= ImGui::SliderInt("KDJ period", &kdj_period, 2, 200);
     dirty |= ImGui::SliderInt("BOLL period", &boll_period, 2, 300);
     dirty |= ImGui::SliderFloat("BOLL k", &boll_k, 0.5f, 4.0f, "%.2f");
+    // SAR & TD9 params
+    dirty |= ImGui::SliderFloat("SAR step", &sar_step, 0.001f, 0.2f, "%.3f");
+    dirty |= ImGui::SliderFloat("SAR max", &sar_max, 0.01f, 1.0f, "%.2f");
+    ImGui::SliderFloat("SAR dot size", &opt.sar_dot_size, 1.5f, 6.0f, "%.1f");
+    dirty |= ImGui::SliderInt("TD9 lookback", &td_lookback, 1, 9);
     // BOLL style (no recompute required)
     ImGui::ColorEdit4("BOLL Mid Color", &opt.boll_mid_color.x, ImGuiColorEditFlags_NoInputs);
     ImGui::ColorEdit4("BOLL Band Color", &opt.boll_band_color.x, ImGuiColorEditFlags_NoInputs);
@@ -1389,12 +1476,16 @@ int main(int, char **) {
             macd_signal = std::max(2, macd_signal);
             rsi_period = std::min(std::max(2, rsi_period), (int)closes.size());
             boll_period = std::min(std::max(2, boll_period), (int)closes.size());
+            sar_step = std::max(0.0001f, std::min(1.0f, sar_step));
+            sar_max = std::max(sar_step, sar_max);
             sma_v = ind::sma(closes, sma_period);
             ema_v = ind::ema(closes, ema_period);
             ind::macd(closes, macd_fast, macd_slow, macd_signal, &macd_line, &signal_line, &hist);
             ind::rsi(closes, rsi_period, rsi_v);
             compute_boll(closes, boll_period, (double)boll_k, boll_mid, boll_up, boll_dn);
             ind::kdj(closes, highs, lows, kdj_period, k_vals, d_vals, j_vals);
+            ind::parabolic_sar(highs, lows, closes, sar_step, sar_max, sar_v, &sar_trend);
+            ind::td_setup(closes, td_lookback, td_buy, td_sell);
         }
         ImGui::Separator();
         ImGui::Text("Load CSV");
